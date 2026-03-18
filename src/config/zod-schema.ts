@@ -729,6 +729,17 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        doxxnet: z
+          .object({
+            mode: z.union([z.literal("off"), z.literal("on")]).optional(),
+            scope: z.union([z.literal("all"), z.literal("gateway"), z.literal("web")]).optional(),
+            token: SecretInputSchema.optional().register(sensitive),
+            server: z.string().optional(),
+            resetOnExit: z.boolean().optional(),
+            domain: z.string().optional(),
+          })
+          .strict()
+          .optional(),
         remote: z
           .object({
             url: z.string().optional(),
