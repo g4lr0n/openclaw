@@ -233,13 +233,14 @@ export function jsonConfigToWgConf(config: Record<string, unknown>): string | nu
   return lines.join("\n");
 }
 
-/** Fetch WireGuard config using an existing tunnel token. Returns conf string or null. */
-async function fetchConfigWithTunnelToken(
-  token: string,
-  tunnelToken: string,
-): Promise<string | null> {
+/**
+ * Fetch WireGuard config via `wireguard=1&token=$TOKEN`.
+ * The API returns the existing tunnel config for the account; returns null if no tunnel exists
+ * or on any error.
+ */
+async function fetchWireguardConfig(token: string): Promise<string | null> {
   try {
-    const result = await doxxnetPost({ wireguard: "1", token, tunnel_token: tunnelToken });
+    const result = await doxxnetPost({ wireguard: "1", token });
     const r = result as Record<string, unknown>;
     if (r.status !== "success") {
       return null;
@@ -259,42 +260,46 @@ async function fetchConfigWithTunnelToken(
 
 /**
  * Get WireGuard config for an existing tunnel, or create one and return the config.
- * Idempotent: persists the tunnel_token to disk and reuses it on subsequent calls.
+ *
+ * Flow (per SKILL.md):
+ *  1. `wireguard=1&token` — returns config if a tunnel already exists.
+ *  2. `create_tunnel=1&token&name=openclaw&server=<serverName>` — create a tunnel.
+ *  3. `wireguard=1&token` again — retrieve config for the newly created tunnel.
+ *
+ * The `tunnel_token` returned by `create_tunnel` is persisted to disk for use in
+ * firewall rule calls; it is NOT used when fetching the WireGuard config.
  */
 export async function getOrCreateTunnelConfig(
   token: string,
   serverName: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
-  // Try existing tunnel token from disk
-  const storedToken = await loadTunnelToken(env);
-  if (storedToken) {
-    const conf = await fetchConfigWithTunnelToken(token, storedToken);
-    if (conf) {
-      return conf;
-    }
-    // Stored token is stale — fall through to create a new tunnel
+  // Step 1: try to get existing tunnel config
+  const existing = await fetchWireguardConfig(token);
+  if (existing) {
+    return existing;
   }
 
-  // Create a new tunnel (current API requires type=wireguard)
+  // Step 2: no existing tunnel — create one
   const created = await doxxnetPost({
     create_tunnel: "1",
     token,
     name: "openclaw",
     server: serverName,
-    type: "wireguard",
   });
   assertApiSuccess(created, "Failed to create doxxnet tunnel");
+
+  // Persist tunnel_token for subsequent firewall rule calls
   const tunnelToken =
     typeof created.tunnel_token === "string"
       ? (created as { tunnel_token: string }).tunnel_token
       : null;
-  if (!tunnelToken) {
-    throw new Error("doxxnet create_tunnel did not return a tunnel_token");
+  if (tunnelToken) {
+    await saveTunnelToken(tunnelToken, env);
   }
-  await saveTunnelToken(tunnelToken, env);
 
-  const conf = await fetchConfigWithTunnelToken(token, tunnelToken);
+  // Step 3: retrieve config for the newly created tunnel
+  const conf = await fetchWireguardConfig(token);
   if (!conf) {
     throw new Error("Failed to retrieve WireGuard config after tunnel creation");
   }
