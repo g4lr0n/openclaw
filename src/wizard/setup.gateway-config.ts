@@ -207,6 +207,7 @@ export async function configureGatewayForSetup(
           await prompter.text({
             message: "doxxnet auth token (get yours at https://a0x13.doxx.net)",
             placeholder: "Paste your doxxnet token",
+            secret: true,
           }),
         ).trim();
         if (!rawToken) {

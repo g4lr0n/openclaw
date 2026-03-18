@@ -22,6 +22,8 @@ export type WizardTextParams = {
   initialValue?: string;
   placeholder?: string;
   validate?: (value: string) => string | undefined;
+  /** Mask input characters (use for passwords/tokens). */
+  secret?: boolean;
 };
 
 export type WizardConfirmParams = {
