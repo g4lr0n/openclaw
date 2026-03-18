@@ -4,12 +4,18 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { Agent } from "undici";
 import { resolveStateDir } from "../config/config.js";
 import type { DoxxnetTrafficScope } from "../config/types.gateway.js";
 import { runExec } from "../process/exec.js";
 import { isIpInCidr } from "../shared/net/ip.js";
 
 const DOXXNET_CONFIG_API = "https://config.doxx.net/v1/";
+
+// Custom dispatcher with a 30-second connect timeout to handle hosts where
+// config.doxx.net DNS returns multiple IPv4+IPv6 addresses (happy-eyeballs race)
+// and the default undici 10-second connect timeout fires before any connect succeeds.
+const doxxnetAgent = new Agent({ connectTimeout: 30_000 });
 
 export type DoxxnetServer = {
   /** server_name field from API — pass to create_tunnel */
@@ -114,14 +120,12 @@ export async function findWgQuickBinary(): Promise<string | null> {
 
 async function doxxnetPost(params: Record<string, string>): Promise<unknown> {
   const body = new URLSearchParams(params).toString();
-  // 30-second timeout: the doxxnet API can take 12-15s to connect from some hosts
-  // when DNS returns multiple IPv4+IPv6 addresses and happy-eyeballs races them.
-  const signal = AbortSignal.timeout(30_000);
   const response = await fetch(DOXXNET_CONFIG_API, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
-    signal,
+    // @ts-ignore — Node.js fetch accepts `dispatcher` to override undici Agent
+    dispatcher: doxxnetAgent,
   });
   if (!response.ok) {
     throw new Error(`doxxnet API error: HTTP ${response.status} ${response.statusText}`);
