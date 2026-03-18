@@ -163,51 +163,137 @@ export async function listDoxxnetServers(): Promise<DoxxnetServer[]> {
   });
 }
 
+/** Path to the stored doxxnet tunnel token file. */
+export function getDoxxnetTunnelTokenPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(resolveStateDir(env), "vpn", "doxxnet-tunnel-token.txt");
+}
+
+/** Persist the tunnel token for reuse across gateway restarts. */
+async function saveTunnelToken(
+  tunnelToken: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const p = getDoxxnetTunnelTokenPath(env);
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  await fs.writeFile(p, tunnelToken, { encoding: "utf8", mode: 0o600 });
+}
+
+/** Load a previously saved tunnel token, or return null. */
+async function loadTunnelToken(env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  try {
+    return (await fs.readFile(getDoxxnetTunnelTokenPath(env), "utf8")).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Convert a doxxnet JSON config object to a WireGuard .conf string.
+ * Handles both the legacy string format and the current structured JSON format.
+ */
+export function jsonConfigToWgConf(config: Record<string, unknown>): string | null {
+  // Legacy: API returned a flat string
+  if (typeof config.config === "string") {
+    const s = (config as { config: string }).config;
+    if (s.includes("[Interface]")) {
+      return s;
+    }
+  }
+  // Current: API returns structured { interface: {...}, peer: {...} }
+  const iface = config.interface as Record<string, string> | undefined;
+  const peer = config.peer as Record<string, string | number> | undefined;
+  if (!iface || !peer) {
+    return null;
+  }
+  const lines: string[] = ["[Interface]"];
+  if (iface.private_key) {
+    lines.push(`PrivateKey = ${iface.private_key}`);
+  }
+  if (iface.address) {
+    lines.push(`Address = ${iface.address}`);
+  }
+  if (iface.dns) {
+    lines.push(`DNS = ${iface.dns}`);
+  }
+  lines.push("", "[Peer]");
+  if (peer.public_key) {
+    lines.push(`PublicKey = ${peer.public_key}`);
+  }
+  if (peer.allowed_ips) {
+    lines.push(`AllowedIPs = ${peer.allowed_ips}`);
+  }
+  if (peer.endpoint) {
+    lines.push(`Endpoint = ${peer.endpoint}`);
+  }
+  if (peer.persistent_keepalive) {
+    lines.push(`PersistentKeepalive = ${peer.persistent_keepalive}`);
+  }
+  return lines.join("\n");
+}
+
+/** Fetch WireGuard config using an existing tunnel token. Returns conf string or null. */
+async function fetchConfigWithTunnelToken(
+  token: string,
+  tunnelToken: string,
+): Promise<string | null> {
+  try {
+    const result = await doxxnetPost({ wireguard: "1", token, tunnel_token: tunnelToken });
+    const r = result as Record<string, unknown>;
+    if (r.status !== "success") {
+      return null;
+    }
+    // API may return a nested config object or a legacy flat string
+    const cfg =
+      typeof r.config === "object" && r.config !== null
+        ? jsonConfigToWgConf(r.config as Record<string, unknown>)
+        : typeof r.config === "string" && r.config.includes("[Interface]")
+          ? r.config
+          : null;
+    return cfg;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Get WireGuard config for an existing tunnel, or create one and return the config.
- * Idempotent: calls `wireguard=1` first; only calls `create_tunnel=1` if no config exists.
+ * Idempotent: persists the tunnel_token to disk and reuses it on subsequent calls.
  */
-export async function getOrCreateTunnelConfig(token: string, serverName: string): Promise<string> {
-  // Try to get existing tunnel config
-  try {
-    const existing = await doxxnetPost({ wireguard: "1", token });
-    const r = existing as Record<string, unknown>;
-    if (r.status === "success") {
-      const conf =
-        typeof r.config === "string"
-          ? r.config
-          : typeof r.wireguard_config === "string"
-            ? r.wireguard_config
-            : null;
-      if (conf && conf.includes("[Interface]")) {
-        return conf;
-      }
+export async function getOrCreateTunnelConfig(
+  token: string,
+  serverName: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string> {
+  // Try existing tunnel token from disk
+  const storedToken = await loadTunnelToken(env);
+  if (storedToken) {
+    const conf = await fetchConfigWithTunnelToken(token, storedToken);
+    if (conf) {
+      return conf;
     }
-  } catch {
-    // No existing tunnel or API error — proceed to create
+    // Stored token is stale — fall through to create a new tunnel
   }
 
-  // Create tunnel
+  // Create a new tunnel (current API requires type=wireguard)
   const created = await doxxnetPost({
     create_tunnel: "1",
     token,
     name: "openclaw",
     server: serverName,
+    type: "wireguard",
   });
   assertApiSuccess(created, "Failed to create doxxnet tunnel");
-
-  // Fetch config after creation
-  const configResult = await doxxnetPost({ wireguard: "1", token });
-  const r2 = configResult as Record<string, unknown>;
-  const conf =
-    r2.status === "success"
-      ? typeof r2.config === "string"
-        ? r2.config
-        : typeof r2.wireguard_config === "string"
-          ? r2.wireguard_config
-          : null
+  const tunnelToken =
+    typeof created.tunnel_token === "string"
+      ? (created as { tunnel_token: string }).tunnel_token
       : null;
-  if (!conf || !conf.includes("[Interface]")) {
+  if (!tunnelToken) {
+    throw new Error("doxxnet create_tunnel did not return a tunnel_token");
+  }
+  await saveTunnelToken(tunnelToken, env);
+
+  const conf = await fetchConfigWithTunnelToken(token, tunnelToken);
+  if (!conf) {
     throw new Error("Failed to retrieve WireGuard config after tunnel creation");
   }
   return conf;
@@ -251,7 +337,18 @@ export async function wgQuickUp(
   confPath: string,
   bin: string,
 ): Promise<{ interfaceName: string; interfaceIp: string }> {
-  await runExec(bin, ["up", confPath], { timeoutMs: 30_000 });
+  try {
+    await runExec(bin, ["up", confPath], { timeoutMs: 30_000 });
+  } catch (err) {
+    // On macOS wg-quick maps the config name to a utunN interface. If the
+    // interface already exists (e.g. gateway restarted while tunnel is still
+    // up), wg-quick exits non-zero with "already exists as `utunN'". Treat
+    // this as idempotent success so CIDR/IP detection still runs.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes("already exists")) {
+      throw err;
+    }
+  }
   const conf = await fs.readFile(confPath, "utf8");
   const cidr = parseWgAddressCidr(conf);
   if (cidr) {
@@ -272,11 +369,26 @@ export async function wgQuickDown(confPath: string, bin: string): Promise<void> 
 
 /**
  * Check whether a WireGuard interface is currently active.
- * Returns true if `wg show <name>` succeeds and shows the interface.
+ * On Linux, `wg show <name>` works directly.
+ * On macOS, wg-quick maps the config name to a utunN interface via
+ * `/var/run/wireguard/<name>.name` (readable by root only). We fall back to
+ * `wg show all` and check whether any interface output is present, covering
+ * the case where the `.name` file is unreadable by the current process.
  */
 export async function checkDoxxnetInterface(name: string): Promise<boolean> {
+  // Try direct name first (works on Linux and macOS when root).
   try {
     const { stdout } = await runExec("wg", ["show", name], { timeoutMs: 5_000 });
+    if (stdout.trim().length > 0) {
+      return true;
+    }
+  } catch {
+    // Fall through to alternative check.
+  }
+  // On macOS the interface may be registered as utunN; `wg show all` lists all
+  // active WireGuard interfaces regardless of name resolution.
+  try {
+    const { stdout } = await runExec("wg", ["show", "all"], { timeoutMs: 5_000 });
     return stdout.trim().length > 0;
   } catch {
     return false;

@@ -10,7 +10,7 @@ import {
   writeDoxxnetWgConfig,
 } from "./doxxnet.js";
 
-const runExecMock = vi.fn();
+const { runExecMock } = vi.hoisted(() => ({ runExecMock: vi.fn() }));
 
 vi.mock("../process/exec.js", () => ({
   runExec: (...args: unknown[]) => runExecMock(...args),
@@ -81,33 +81,72 @@ describe("listDoxxnetServers", () => {
 
 describe("getOrCreateTunnelConfig", () => {
   const WG_CONF = "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nPublicKey = abc";
+  let tmpDir: string;
 
-  it("returns existing config without calling create_tunnel", async () => {
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "doxxnet-tunnel-test-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("returns existing config via stored tunnel_token without calling create_tunnel", async () => {
+    // Pre-write a stored tunnel token
+    const vpnDir = path.join(tmpDir, "vpn");
+    await fs.mkdir(vpnDir, { recursive: true });
+    await fs.writeFile(path.join(vpnDir, "doxxnet-tunnel-token.txt"), "stored-tunnel-tok");
+
+    // wireguard=1 with tunnel_token returns config
     mockApiResponse({ status: "success", config: WG_CONF });
-    const conf = await getOrCreateTunnelConfig("tok", "wireguard.mia.us.doxx.net");
+
+    const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
+    const conf = await getOrCreateTunnelConfig("tok", "wireguard.mia.us.doxx.net", env);
     expect(conf).toBe(WG_CONF);
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const call = mockFetch.mock.calls[0];
     const body = new URLSearchParams(call[1].body as string);
     expect(body.get("wireguard")).toBe("1");
+    expect(body.get("tunnel_token")).toBe("stored-tunnel-tok");
     expect(body.has("create_tunnel")).toBe(false);
   });
 
-  it("calls create_tunnel then wireguard when no existing config", async () => {
-    // wireguard=1 returns no config
-    mockApiResponse({ status: "error", message: "no tunnel" });
-    // create_tunnel=1 returns success
-    mockApiResponse({ status: "success" });
-    // wireguard=1 second call returns config
+  it("calls create_tunnel (with type=wireguard) then wireguard when no stored token", async () => {
+    // create_tunnel=1 returns success + tunnel_token
+    mockApiResponse({ status: "success", tunnel_token: "new-tunnel-tok" });
+    // wireguard=1 with tunnel_token returns config
     mockApiResponse({ status: "success", config: WG_CONF });
 
-    const conf = await getOrCreateTunnelConfig("tok", "wireguard.mia.us.doxx.net");
+    const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
+    const conf = await getOrCreateTunnelConfig("tok", "wireguard.mia.us.doxx.net", env);
     expect(conf).toBe(WG_CONF);
-    expect(mockFetch).toHaveBeenCalledTimes(3);
-    const createCall = mockFetch.mock.calls[1];
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const createCall = mockFetch.mock.calls[0];
     const body = new URLSearchParams(createCall[1].body as string);
     expect(body.get("create_tunnel")).toBe("1");
+    expect(body.get("type")).toBe("wireguard");
     expect(body.get("server")).toBe("wireguard.mia.us.doxx.net");
+    // tunnel_token should be persisted to disk
+    const saved = await fs.readFile(path.join(tmpDir, "vpn", "doxxnet-tunnel-token.txt"), "utf8");
+    expect(saved.trim()).toBe("new-tunnel-tok");
+  });
+
+  it("falls through to create_tunnel when stored token returns no config", async () => {
+    const vpnDir = path.join(tmpDir, "vpn");
+    await fs.mkdir(vpnDir, { recursive: true });
+    await fs.writeFile(path.join(vpnDir, "doxxnet-tunnel-token.txt"), "stale-token");
+
+    // wireguard=1 with stale token returns error (token stale)
+    mockApiResponse({ status: "error", message: "invalid tunnel_token" });
+    // create_tunnel=1 returns new tunnel_token
+    mockApiResponse({ status: "success", tunnel_token: "fresh-token" });
+    // wireguard=1 with new token returns config
+    mockApiResponse({ status: "success", config: WG_CONF });
+
+    const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
+    const conf = await getOrCreateTunnelConfig("tok", "wireguard.mia.us.doxx.net", env);
+    expect(conf).toBe(WG_CONF);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -172,12 +211,30 @@ describe("findWgQuickBinary", () => {
 });
 
 describe("wgQuickUp", () => {
-  it("throws descriptive error when wg-quick fails", async () => {
+  it("throws descriptive error when wg-quick fails with unrecognized error", async () => {
     vi.resetModules();
     runExecMock.mockRejectedValue(new Error("Operation not permitted"));
-    const { wgQuickUp } = await import("./doxxnet.js");
-    await expect(wgQuickUp("/tmp/test.conf", "/usr/bin/wg-quick")).rejects.toThrow(
+    const { wgQuickUp: wgUp } = await import("./doxxnet.js");
+    await expect(wgUp("/tmp/test.conf", "/usr/bin/wg-quick")).rejects.toThrow(
       "Operation not permitted",
     );
+  });
+
+  it("treats 'already exists as utunN' as idempotent success (macOS AC-4)", async () => {
+    // wg-quick up exits non-zero with "already exists" when tunnel is already up on macOS
+    vi.resetModules();
+    runExecMock.mockRejectedValue(
+      new Error("Command failed: wg-quick up /tmp/doxxnet.conf\nalready exists as `utun0'"),
+    );
+    const { wgQuickUp: wgUp } = await import("./doxxnet.js");
+    // Should not throw; reads the conf from disk to extract CIDR
+    const tmpConf = path.join(os.tmpdir(), "doxxnet-idempotent.conf");
+    await fs.writeFile(tmpConf, "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nPublicKey = abc");
+    try {
+      const result = await wgUp(tmpConf, "/opt/homebrew/bin/wg-quick");
+      expect(result.interfaceIp).toBe("10.8.0.1");
+    } finally {
+      await fs.rm(tmpConf, { force: true });
+    }
   });
 });
