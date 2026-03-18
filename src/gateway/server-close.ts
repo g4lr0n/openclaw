@@ -9,6 +9,7 @@ import type { PluginServicesHandle } from "../plugins/services.js";
 export function createGatewayCloseHandler(params: {
   bonjourStop: (() => Promise<void>) | null;
   tailscaleCleanup: (() => Promise<void>) | null;
+  doxxnetCleanup: (() => Promise<void>) | null;
   canvasHost: CanvasHostHandler | null;
   canvasHostServer: CanvasHostServer | null;
   releasePluginRouteRegistry?: (() => void) | null;
@@ -50,6 +51,9 @@ export function createGatewayCloseHandler(params: {
       }
       if (params.tailscaleCleanup) {
         await params.tailscaleCleanup();
+      }
+      if (params.doxxnetCleanup) {
+        await params.doxxnetCleanup();
       }
       if (params.canvasHost) {
         try {

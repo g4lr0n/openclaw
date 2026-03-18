@@ -1,6 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import net from "node:net";
 import os from "node:os";
+import { pickPrimaryDoxxnetIPv4 } from "../infra/doxxnet.js";
 import { pickPrimaryTailnetIPv4, pickPrimaryTailnetIPv6 } from "../infra/tailnet.js";
 import {
   isCanonicalDottedDecimalIPv4,
@@ -286,6 +287,21 @@ export async function resolveGatewayBindHost(
   }
 
   if (mode === "auto") {
+    if (await canBindToHost("127.0.0.1")) {
+      return "127.0.0.1";
+    }
+    return "0.0.0.0";
+  }
+
+  if (mode === "doxxnet") {
+    // WireGuard interface must be up before the gateway binds.
+    // startGatewayDoxxnetExposure() is called early in startGatewayServer() when
+    // bind=doxxnet so the interface IP is already assigned by the time we get here.
+    const doxxnetIP = pickPrimaryDoxxnetIPv4();
+    if (doxxnetIP && (await canBindToHost(doxxnetIP))) {
+      return doxxnetIP;
+    }
+    // Tunnel not yet up — fall back to loopback
     if (await canBindToHost("127.0.0.1")) {
       return "127.0.0.1";
     }

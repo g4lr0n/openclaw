@@ -458,7 +458,7 @@ export const DEFAULT_WORKSPACE = DEFAULT_AGENT_WORKSPACE_DIR;
 
 export function resolveControlUiLinks(params: {
   port: number;
-  bind?: "auto" | "lan" | "loopback" | "custom" | "tailnet";
+  bind?: "auto" | "lan" | "loopback" | "custom" | "tailnet" | "doxxnet";
   customBindHost?: string;
   basePath?: string;
 }): { httpUrl: string; wsUrl: string } {
@@ -476,6 +476,7 @@ export function resolveControlUiLinks(params: {
     if (bind === "lan") {
       return pickPrimaryLanIPv4() ?? "127.0.0.1";
     }
+    // doxxnet: show loopback in UI links; the WireGuard IP is for external access
     return "127.0.0.1";
   })();
   const basePath = normalizeControlUiBasePath(params.basePath);

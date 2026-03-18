@@ -1,6 +1,7 @@
 import type {
   GatewayAuthConfig,
   GatewayBindMode,
+  GatewayDoxxnetConfig,
   GatewayTailscaleConfig,
   loadConfig,
 } from "../config/config.js";
@@ -17,7 +18,7 @@ import {
   isValidIPv4,
   resolveGatewayBindHost,
 } from "./net.js";
-import { mergeGatewayTailscaleConfig } from "./startup-auth.js";
+import { mergeGatewayDoxxnetConfig, mergeGatewayTailscaleConfig } from "./startup-auth.js";
 
 export type GatewayRuntimeConfig = {
   bindHost: string;
@@ -33,6 +34,8 @@ export type GatewayRuntimeConfig = {
   authMode: ResolvedGatewayAuth["mode"];
   tailscaleConfig: GatewayTailscaleConfig;
   tailscaleMode: "off" | "serve" | "funnel";
+  doxxnetConfig: GatewayDoxxnetConfig;
+  doxxnetMode: "off" | "on";
   hooksConfig: ReturnType<typeof resolveHooksConfig>;
   canvasHostEnabled: boolean;
 };
@@ -47,6 +50,7 @@ export async function resolveGatewayRuntimeConfig(params: {
   openResponsesEnabled?: boolean;
   auth?: GatewayAuthConfig;
   tailscale?: GatewayTailscaleConfig;
+  doxxnet?: GatewayDoxxnetConfig;
 }): Promise<GatewayRuntimeConfig> {
   const bindMode = params.bind ?? params.cfg.gateway?.bind ?? "loopback";
   const customBindHost = params.cfg.gateway?.customBindHost;
@@ -98,6 +102,10 @@ export async function resolveGatewayRuntimeConfig(params: {
   const tailscaleOverrides = params.tailscale ?? {};
   const tailscaleConfig = mergeGatewayTailscaleConfig(tailscaleBase, tailscaleOverrides);
   const tailscaleMode = tailscaleConfig.mode ?? "off";
+  const doxxnetBase = params.cfg.gateway?.doxxnet ?? {};
+  const doxxnetOverrides = params.doxxnet ?? {};
+  const doxxnetConfig = mergeGatewayDoxxnetConfig(doxxnetBase, doxxnetOverrides);
+  const doxxnetMode = doxxnetConfig.mode ?? "off";
   const resolvedAuth = resolveGatewayAuth({
     authConfig: params.cfg.gateway?.auth,
     authOverride: params.auth,
@@ -182,6 +190,8 @@ export async function resolveGatewayRuntimeConfig(params: {
     authMode,
     tailscaleConfig,
     tailscaleMode,
+    doxxnetConfig,
+    doxxnetMode,
     hooksConfig,
     canvasHostEnabled,
   };

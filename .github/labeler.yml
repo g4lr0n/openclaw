@@ -1,3 +1,9 @@
+"extension: doxxnet":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "extensions/doxxnet/**"
+          - "src/infra/doxxnet.ts"
+          - "src/gateway/server-doxxnet.ts"
 "channel: bluebubbles":
   - changed-files:
       - any-glob-to-any-file:

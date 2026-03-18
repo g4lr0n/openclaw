@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import type {
   GatewayAuthConfig,
+  GatewayDoxxnetConfig,
   GatewayTailscaleConfig,
   OpenClawConfig,
 } from "../config/config.js";
@@ -54,6 +55,32 @@ export function mergeGatewayTailscaleConfig(
   }
   if (override.mode !== undefined) {
     merged.mode = override.mode;
+  }
+  if (override.resetOnExit !== undefined) {
+    merged.resetOnExit = override.resetOnExit;
+  }
+  return merged;
+}
+
+export function mergeGatewayDoxxnetConfig(
+  base?: GatewayDoxxnetConfig,
+  override?: GatewayDoxxnetConfig,
+): GatewayDoxxnetConfig {
+  const merged: GatewayDoxxnetConfig = { ...base };
+  if (!override) {
+    return merged;
+  }
+  if (override.mode !== undefined) {
+    merged.mode = override.mode;
+  }
+  if (override.scope !== undefined) {
+    merged.scope = override.scope;
+  }
+  if (override.token !== undefined) {
+    merged.token = override.token;
+  }
+  if (override.server !== undefined) {
+    merged.server = override.server;
   }
   if (override.resetOnExit !== undefined) {
     merged.resetOnExit = override.resetOnExit;

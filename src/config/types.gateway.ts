@@ -1,6 +1,23 @@
 import type { SecretInput } from "./types.secrets.js";
 
-export type GatewayBindMode = "auto" | "lan" | "loopback" | "custom" | "tailnet";
+export type GatewayBindMode = "auto" | "lan" | "loopback" | "custom" | "tailnet" | "doxxnet";
+
+export type GatewayDoxxnetMode = "off" | "on";
+
+export type DoxxnetTrafficScope = "all" | "gateway" | "web";
+
+export type GatewayDoxxnetConfig = {
+  /** doxxnet VPN mode for the Gateway. */
+  mode?: GatewayDoxxnetMode;
+  /** Traffic scope routed through doxxnet. */
+  scope?: DoxxnetTrafficScope;
+  /** Auth token for the doxxnet API (plaintext or SecretRef; also reads DOXXNET_TOKEN env). */
+  token?: import("./types.secrets.js").SecretInput;
+  /** doxxnet server name (server_name field from API) to create/use for the tunnel. */
+  server?: string;
+  /** Tear down the WireGuard tunnel on gateway shutdown. */
+  resetOnExit?: boolean;
+};
 
 export type GatewayTlsConfig = {
   /** Enable TLS for the gateway server. */
@@ -413,6 +430,7 @@ export type GatewayConfig = {
   controlUi?: GatewayControlUiConfig;
   auth?: GatewayAuthConfig;
   tailscale?: GatewayTailscaleConfig;
+  doxxnet?: GatewayDoxxnetConfig;
   remote?: GatewayRemoteConfig;
   reload?: GatewayReloadConfig;
   tls?: GatewayTlsConfig;

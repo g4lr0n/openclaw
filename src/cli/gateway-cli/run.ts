@@ -2,7 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Command } from "commander";
 import { readSecretFromFile } from "../../acp/secret-file.js";
-import type { GatewayAuthMode, GatewayTailscaleMode } from "../../config/config.js";
+import type {
+  DoxxnetTrafficScope,
+  GatewayAuthMode,
+  GatewayDoxxnetMode,
+  GatewayTailscaleMode,
+} from "../../config/config.js";
 import {
   CONFIG_PATH,
   loadConfig,
@@ -44,6 +49,9 @@ type GatewayRunOpts = {
   passwordFile?: unknown;
   tailscale?: unknown;
   tailscaleResetOnExit?: boolean;
+  doxxnet?: unknown;
+  doxxnetScope?: unknown;
+  doxxnetResetOnExit?: boolean;
   allowUnconfigured?: boolean;
   force?: boolean;
   verbose?: boolean;
@@ -66,12 +74,15 @@ const GATEWAY_RUN_VALUE_KEYS = [
   "password",
   "passwordFile",
   "tailscale",
+  "doxxnet",
+  "doxxnetScope",
   "wsLog",
   "rawStreamPath",
 ] as const;
 
 const GATEWAY_RUN_BOOLEAN_KEYS = [
   "tailscaleResetOnExit",
+  "doxxnetResetOnExit",
   "allowUnconfigured",
   "dev",
   "reset",
@@ -89,6 +100,8 @@ const GATEWAY_AUTH_MODES: readonly GatewayAuthMode[] = [
   "trusted-proxy",
 ];
 const GATEWAY_TAILSCALE_MODES: readonly GatewayTailscaleMode[] = ["off", "serve", "funnel"];
+const GATEWAY_DOXXNET_MODES: readonly GatewayDoxxnetMode[] = ["off", "on"];
+const GATEWAY_DOXXNET_SCOPES: readonly DoxxnetTrafficScope[] = ["all", "gateway", "web"];
 
 function warnInlinePasswordFlag() {
   defaultRuntime.error(
@@ -215,11 +228,14 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
     bindRaw === "lan" ||
     bindRaw === "auto" ||
     bindRaw === "custom" ||
-    bindRaw === "tailnet"
+    bindRaw === "tailnet" ||
+    bindRaw === "doxxnet"
       ? bindRaw
       : null;
   if (!bind) {
-    defaultRuntime.error('Invalid --bind (use "loopback", "lan", "tailnet", "auto", or "custom")');
+    defaultRuntime.error(
+      'Invalid --bind (use "loopback", "lan", "tailnet", "doxxnet", "auto", or "custom")',
+    );
     defaultRuntime.exit(1);
     return;
   }
@@ -294,6 +310,22 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
   if (tailscaleRaw && !tailscaleMode) {
     defaultRuntime.error(
       `Invalid --tailscale (use ${formatModeErrorList(GATEWAY_TAILSCALE_MODES)})`,
+    );
+    defaultRuntime.exit(1);
+    return;
+  }
+  const doxxnetRaw = toOptionString(opts.doxxnet);
+  const doxxnetMode = parseEnumOption(doxxnetRaw, GATEWAY_DOXXNET_MODES);
+  if (doxxnetRaw && !doxxnetMode) {
+    defaultRuntime.error(`Invalid --doxxnet (use ${formatModeErrorList(GATEWAY_DOXXNET_MODES)})`);
+    defaultRuntime.exit(1);
+    return;
+  }
+  const doxxnetScopeRaw = toOptionString(opts.doxxnetScope);
+  const doxxnetScope = parseEnumOption(doxxnetScopeRaw, GATEWAY_DOXXNET_SCOPES);
+  if (doxxnetScopeRaw && !doxxnetScope) {
+    defaultRuntime.error(
+      `Invalid --doxxnet-scope (use ${formatModeErrorList(GATEWAY_DOXXNET_SCOPES)})`,
     );
     defaultRuntime.exit(1);
     return;
@@ -418,6 +450,15 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
         }
       : undefined;
 
+  const doxxnetOverride =
+    doxxnetMode || doxxnetScope || opts.doxxnetResetOnExit
+      ? {
+          ...(doxxnetMode ? { mode: doxxnetMode } : {}),
+          ...(doxxnetScope ? { scope: doxxnetScope } : {}),
+          ...(opts.doxxnetResetOnExit ? { resetOnExit: true } : {}),
+        }
+      : undefined;
+
   try {
     await runGatewayLoop({
       runtime: defaultRuntime,
@@ -427,6 +468,7 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
           bind,
           auth: authOverride,
           tailscale: tailscaleOverride,
+          doxxnet: doxxnetOverride,
         }),
     });
   } catch (err) {
@@ -480,6 +522,12 @@ export function addGatewayRunCommand(cmd: Command): Command {
       "Reset Tailscale serve/funnel configuration on shutdown",
       false,
     )
+    .option("--doxxnet <mode>", `doxxnet VPN mode (${formatModeChoices(GATEWAY_DOXXNET_MODES)})`)
+    .option(
+      "--doxxnet-scope <scope>",
+      `doxxnet traffic scope (${formatModeChoices(GATEWAY_DOXXNET_SCOPES)})`,
+    )
+    .option("--doxxnet-reset-on-exit", "Tear down doxxnet tunnel on gateway shutdown", false)
     .option(
       "--allow-unconfigured",
       "Allow gateway start without gateway.mode=local in config",

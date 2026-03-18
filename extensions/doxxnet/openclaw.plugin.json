@@ -1,0 +1,11 @@
+{
+  "id": "doxxnet",
+  "name": "doxxnet",
+  "description": "doxxnet VPN management skills for OpenClaw agents",
+  "skills": ["skills/doxxnet"],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

@@ -227,7 +227,7 @@ export async function runSetupWizard(
   })();
 
   if (flow === "quickstart") {
-    const formatBind = (value: "loopback" | "lan" | "auto" | "custom" | "tailnet") => {
+    const formatBind = (value: "loopback" | "lan" | "auto" | "custom" | "tailnet" | "doxxnet") => {
       if (value === "loopback") {
         return "Loopback (127.0.0.1)";
       }
@@ -239,6 +239,9 @@ export async function runSetupWizard(
       }
       if (value === "tailnet") {
         return "Tailnet (Tailscale IP)";
+      }
+      if (value === "doxxnet") {
+        return "doxxnet (WireGuard IP)";
       }
       return "Auto";
     };

@@ -1,0 +1,12 @@
+{
+  "name": "@openclaw/doxxnet",
+  "version": "2026.3.17",
+  "private": true,
+  "description": "OpenClaw doxxnet VPN skill plugin",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}

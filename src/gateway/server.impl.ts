@@ -82,6 +82,7 @@ import { createAgentEventHandler } from "./server-chat.js";
 import { createGatewayCloseHandler } from "./server-close.js";
 import { buildGatewayCronService } from "./server-cron.js";
 import { startGatewayDiscovery } from "./server-discovery-runtime.js";
+import { startGatewayDoxxnetExposure } from "./server-doxxnet.js";
 import { applyGatewayLaneConcurrency } from "./server-lanes.js";
 import { startGatewayMaintenanceTimers } from "./server-maintenance.js";
 import { GATEWAY_EVENTS, listGatewayMethods } from "./server-methods-list.js";
@@ -138,6 +139,7 @@ const log = createSubsystemLogger("gateway");
 const logCanvas = log.child("canvas");
 const logDiscovery = log.child("discovery");
 const logTailscale = log.child("tailscale");
+const logDoxxnet = log.child("doxxnet");
 const logChannels = log.child("channels");
 const logBrowser = log.child("browser");
 
@@ -327,6 +329,10 @@ export type GatewayServerOptions = {
    */
   tailscale?: import("../config/config.js").GatewayTailscaleConfig;
   /**
+   * Override gateway doxxnet VPN configuration (merges with config).
+   */
+  doxxnet?: import("../config/config.js").GatewayDoxxnetConfig;
+  /**
    * Test-only: allow canvas host startup even when NODE_ENV/VITEST would disable it.
    */
   allowCanvasHostInTests?: boolean;
@@ -506,6 +512,27 @@ export async function startGatewayServer(
     log,
   });
 
+  // Pre-bind phase: when gateway.bind=doxxnet, the WireGuard tunnel must be up
+  // before resolveGatewayRuntimeConfig runs so the interface IP is available.
+  const effectiveBind = opts.bind ?? cfgAtStart.gateway?.bind;
+  const effectiveDoxxnetConfig = opts.doxxnet ?? cfgAtStart.gateway?.doxxnet;
+  const doxxnetPreBind = effectiveBind === "doxxnet" && effectiveDoxxnetConfig?.mode === "on";
+  let doxxnetCleanup: (() => Promise<void>) | null = null;
+  if (doxxnetPreBind && !minimalTestGateway) {
+    doxxnetCleanup = await startGatewayDoxxnetExposure({
+      doxxnetMode: effectiveDoxxnetConfig?.mode ?? "off",
+      scope: effectiveDoxxnetConfig?.scope ?? "gateway",
+      doxxnetToken:
+        typeof effectiveDoxxnetConfig?.token === "string"
+          ? effectiveDoxxnetConfig.token
+          : undefined,
+      doxxnetServer: effectiveDoxxnetConfig?.server,
+      resetOnExit: effectiveDoxxnetConfig?.resetOnExit,
+      port,
+      logDoxxnet,
+    });
+  }
+
   initSubagentRegistry();
   const defaultAgentId = resolveDefaultAgentId(cfgAtStart);
   const defaultWorkspaceDir = resolveAgentWorkspaceDir(cfgAtStart, defaultAgentId);
@@ -549,6 +576,7 @@ export async function startGatewayServer(
     openResponsesEnabled: opts.openResponsesEnabled,
     auth: opts.auth,
     tailscale: opts.tailscale,
+    doxxnet: opts.doxxnet,
   });
   const {
     bindHost,
@@ -563,6 +591,8 @@ export async function startGatewayServer(
     resolvedAuth,
     tailscaleConfig,
     tailscaleMode,
+    doxxnetConfig,
+    doxxnetMode,
   } = runtimeConfig;
   let hooksConfig = runtimeConfig.hooksConfig;
   let hookClientIpConfig = resolveHookClientIpConfig(cfgAtStart);
@@ -984,6 +1014,20 @@ export async function startGatewayServer(
         logTailscale,
       });
 
+  // Late doxxnet startup: for scope=all/web (bind != doxxnet), the tunnel is
+  // brought up after server bind (same approach as Tailscale).
+  if (!doxxnetPreBind && doxxnetMode !== "off" && !minimalTestGateway) {
+    doxxnetCleanup = await startGatewayDoxxnetExposure({
+      doxxnetMode,
+      scope: doxxnetConfig.scope ?? "gateway",
+      doxxnetToken: typeof doxxnetConfig.token === "string" ? doxxnetConfig.token : undefined,
+      doxxnetServer: doxxnetConfig.server,
+      resetOnExit: doxxnetConfig.resetOnExit,
+      port,
+      logDoxxnet,
+    });
+  }
+
   let browserControl: Awaited<ReturnType<typeof startBrowserControlServerIfEnabled>> = null;
   if (!minimalTestGateway) {
     if (deferredConfiguredChannelPluginIds.length > 0) {
@@ -1103,6 +1147,7 @@ export async function startGatewayServer(
   const close = createGatewayCloseHandler({
     bonjourStop,
     tailscaleCleanup,
+    doxxnetCleanup,
     canvasHost,
     canvasHostServer,
     releasePluginRouteRegistry,

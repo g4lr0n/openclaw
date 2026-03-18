@@ -1,7 +1,11 @@
 export type GatewayBindUrlResult =
   | {
       url: string;
-      source: "gateway.bind=custom" | "gateway.bind=tailnet" | "gateway.bind=lan";
+      source:
+        | "gateway.bind=custom"
+        | "gateway.bind=tailnet"
+        | "gateway.bind=lan"
+        | "gateway.bind=doxxnet";
     }
   | {
       error: string;
@@ -15,6 +19,7 @@ export function resolveGatewayBindUrl(params: {
   port: number;
   pickTailnetHost: () => string | null;
   pickLanHost: () => string | null;
+  pickDoxxnetHost?: () => string | null;
 }): GatewayBindUrlResult {
   const bind = params.bind ?? "loopback";
   if (bind === "custom") {
@@ -39,6 +44,19 @@ export function resolveGatewayBindUrl(params: {
       return { url: `${params.scheme}://${host}:${params.port}`, source: "gateway.bind=lan" };
     }
     return { error: "gateway.bind=lan set, but no private LAN IP was found." };
+  }
+
+  if (bind === "doxxnet") {
+    const host = params.pickDoxxnetHost?.();
+    if (host) {
+      return {
+        url: `${params.scheme}://${host}:${params.port}`,
+        source: "gateway.bind=doxxnet",
+      };
+    }
+    return {
+      error: "gateway.bind=doxxnet set, but no doxxnet WireGuard IP was found. Is the tunnel up?",
+    };
   }
 
   return null;

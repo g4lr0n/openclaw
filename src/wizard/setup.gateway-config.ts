@@ -4,7 +4,13 @@ import {
   validateGatewayPasswordInput,
 } from "../commands/onboard-helpers.js";
 import type { GatewayAuthChoice, SecretInputMode } from "../commands/onboard-types.js";
-import type { GatewayBindMode, GatewayTailscaleMode, OpenClawConfig } from "../config/config.js";
+import type {
+  DoxxnetTrafficScope,
+  GatewayBindMode,
+  GatewayDoxxnetMode,
+  GatewayTailscaleMode,
+  OpenClawConfig,
+} from "../config/config.js";
 import { ensureControlUiAllowedOriginsForNonLoopbackBind } from "../config/gateway-control-ui-origins.js";
 import {
   normalizeSecretInputString,
@@ -18,6 +24,7 @@ import {
   TAILSCALE_MISSING_BIN_NOTE_LINES,
 } from "../gateway/gateway-config-prompts.shared.js";
 import { DEFAULT_DANGEROUS_NODE_COMMANDS } from "../gateway/node-command-policy.js";
+import { findWgQuickBinary, listDoxxnetServers, verifyDoxxnetToken } from "../infra/doxxnet.js";
 import { findTailscaleBinary } from "../infra/tailscale.js";
 import {
   promptSecretRefForSetup,
@@ -140,6 +147,144 @@ export async function configureGatewayForSetup(
         initialValue: false,
       }),
     );
+  }
+
+  // --- doxxnet VPN (optional, advanced flow only) ---
+  let doxxnetMode: GatewayWizardSettings["doxxnetMode"] = "off";
+  let doxxnetScope: GatewayWizardSettings["doxxnetScope"] = "gateway";
+  let doxxnetResetOnExit = false;
+  let doxxnetToken: string | undefined;
+  let doxxnetServer: string | undefined;
+
+  if (flow !== "quickstart") {
+    const doxxnetEnabled = Boolean(
+      await prompter.confirm({
+        message: "Route gateway traffic through doxxnet VPN? (optional)",
+        initialValue: false,
+      }),
+    );
+
+    if (doxxnetEnabled) {
+      doxxnetMode = "on";
+
+      // Check for wg-quick early so we can warn before prompting for creds
+      const wgQuickBin = await findWgQuickBinary();
+      if (!wgQuickBin) {
+        await prompter.note(
+          [
+            "wg-quick not found in PATH.",
+            "Install wireguard-tools to activate the tunnel:",
+            "  macOS:          brew install wireguard-tools",
+            "  Debian/Ubuntu:  apt install wireguard-tools",
+            "",
+            "You can continue setup, but the tunnel will fail at runtime.",
+          ].join("\n"),
+          "doxxnet Warning",
+        );
+      }
+
+      // Token input
+      let verified = false;
+      while (!verified) {
+        const rawToken = String(
+          await prompter.text({
+            message: "doxxnet auth token (get yours at https://a0x13.doxx.net)",
+            placeholder: "Paste your doxxnet token",
+          }),
+        ).trim();
+        if (!rawToken) {
+          break;
+        }
+        try {
+          await verifyDoxxnetToken(rawToken);
+          doxxnetToken = rawToken;
+          verified = true;
+        } catch (err) {
+          await prompter.note(
+            `Token verification failed: ${err instanceof Error ? err.message : String(err)}\nPlease try again.`,
+            "doxxnet Error",
+          );
+        }
+      }
+
+      if (doxxnetToken) {
+        // Server selection
+        try {
+          const servers = await listDoxxnetServers();
+          if (servers.length > 0) {
+            const selected = await prompter.select<string>({
+              message: "doxxnet server",
+              options: servers.map((s) => ({
+                value: s.serverName,
+                label: `${s.location} — ${s.description}`,
+                hint: s.serverName,
+              })),
+            });
+            doxxnetServer = typeof selected === "string" ? selected : undefined;
+          }
+        } catch {
+          // Non-fatal: user can configure server manually later
+        }
+
+        // Traffic scope
+        doxxnetScope = await prompter.select<DoxxnetTrafficScope>({
+          message: "doxxnet traffic scope",
+          options: [
+            {
+              value: "gateway" as const,
+              label: "Gateway access only",
+              hint: "Remote clients reach you via doxxnet",
+            },
+            {
+              value: "all" as const,
+              label: "All outbound traffic",
+              hint: "Route all openclaw API calls through doxxnet",
+            },
+            {
+              value: "web" as const,
+              label: "Agent web requests",
+              hint: "Only agent browse/search via doxxnet",
+            },
+          ],
+          initialValue: "gateway" as const,
+        });
+
+        // Constraints: scope=gateway binds to the WireGuard IP; others use loopback
+        if (doxxnetScope === "gateway") {
+          bind = "doxxnet" as GatewayBindMode;
+          customBindHost = undefined;
+        } else if (bind === "doxxnet") {
+          bind = "loopback";
+        }
+
+        doxxnetResetOnExit = Boolean(
+          await prompter.confirm({
+            message: "Tear down doxxnet tunnel on gateway shutdown?",
+            initialValue: false,
+          }),
+        );
+      }
+    }
+  } else {
+    // quickstart: apply stored doxxnet defaults
+    doxxnetMode =
+      (
+        opts.quickstartGateway as typeof opts.quickstartGateway & {
+          doxxnetMode?: "off" | "on";
+        }
+      ).doxxnetMode ?? "off";
+    doxxnetScope =
+      (
+        opts.quickstartGateway as typeof opts.quickstartGateway & {
+          doxxnetScope?: DoxxnetTrafficScope;
+        }
+      ).doxxnetScope ?? "gateway";
+    doxxnetResetOnExit =
+      (
+        opts.quickstartGateway as typeof opts.quickstartGateway & {
+          doxxnetResetOnExit?: boolean;
+        }
+      ).doxxnetResetOnExit ?? false;
   }
 
   // Safety + constraints:
@@ -293,6 +438,18 @@ export async function configureGatewayForSetup(
         mode: tailscaleMode as GatewayTailscaleMode,
         resetOnExit: tailscaleResetOnExit,
       },
+      ...(doxxnetMode !== "off"
+        ? {
+            doxxnet: {
+              ...nextConfig.gateway?.doxxnet,
+              mode: doxxnetMode as GatewayDoxxnetMode,
+              scope: doxxnetScope,
+              ...(doxxnetToken ? { token: doxxnetToken } : {}),
+              ...(doxxnetServer ? { server: doxxnetServer } : {}),
+              resetOnExit: doxxnetResetOnExit,
+            },
+          }
+        : {}),
     },
   };
 
@@ -336,6 +493,9 @@ export async function configureGatewayForSetup(
       gatewayToken,
       tailscaleMode: tailscaleMode as GatewayTailscaleMode,
       tailscaleResetOnExit,
+      doxxnetMode,
+      doxxnetScope,
+      doxxnetResetOnExit,
     },
   };
 }
