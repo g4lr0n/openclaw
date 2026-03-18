@@ -134,8 +134,8 @@ export async function configureGatewayForSetup(
         })) as GatewayAuthChoice);
 
   const tailscaleMode: GatewayWizardSettings["tailscaleMode"] =
-    flow === "quickstart"
-      ? quickstartGateway.tailscaleMode
+    flow === "quickstart" || bind === "doxxnet"
+      ? ("off" as const)
       : await prompter.select<GatewayWizardSettings["tailscaleMode"]>({
           message: "Tailscale exposure",
           options: [...TAILSCALE_EXPOSURE_OPTIONS],
