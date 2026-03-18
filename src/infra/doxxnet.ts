@@ -12,10 +12,10 @@ import { isIpInCidr } from "../shared/net/ip.js";
 
 const DOXXNET_CONFIG_API = "https://config.doxx.net/v1/";
 
-// Custom dispatcher with a 30-second connect timeout to handle hosts where
-// config.doxx.net DNS returns multiple IPv4+IPv6 addresses (happy-eyeballs race)
-// and the default undici 10-second connect timeout fires before any connect succeeds.
-const doxxnetAgent = new Agent({ connectTimeout: 30_000 });
+// Custom dispatcher: 60-second connect timeout + IPv4-only to handle hosts where
+// config.doxx.net DNS returns IPv6 addresses that are unreachable (common in VMs/NAT)
+// and to give slow routes enough time to complete (default undici timeout is 10s).
+const doxxnetAgent = new Agent({ connectTimeout: 60_000, connect: { family: 4 } });
 
 export type DoxxnetServer = {
   /** server_name field from API — pass to create_tunnel */
@@ -118,19 +118,46 @@ export async function findWgQuickBinary(): Promise<string | null> {
   return null;
 }
 
-async function doxxnetPost(params: Record<string, string>): Promise<unknown> {
-  const body = new URLSearchParams(params).toString();
-  const response = await fetch(DOXXNET_CONFIG_API, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body,
-    // @ts-ignore — Node.js fetch accepts `dispatcher` to override undici Agent
-    dispatcher: doxxnetAgent,
-  });
-  if (!response.ok) {
-    throw new Error(`doxxnet API error: HTTP ${response.status} ${response.statusText}`);
+function isRetryableNetworkError(err: unknown): boolean {
+  // undici wraps connect/timeout errors as TypeError with "fetch failed" message
+  if (!(err instanceof TypeError)) {
+    return false;
   }
-  return await response.json();
+  const msg = err.message;
+  return (
+    msg.includes("fetch failed") ||
+    msg.includes("Connect Timeout") ||
+    msg.includes("ETIMEDOUT") ||
+    msg.includes("ECONNREFUSED")
+  );
+}
+
+async function doxxnetPost(params: Record<string, string>, retries = 2): Promise<unknown> {
+  const body = new URLSearchParams(params).toString();
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const response = await fetch(DOXXNET_CONFIG_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+        // @ts-ignore — Node.js fetch accepts `dispatcher` to override undici Agent
+        dispatcher: doxxnetAgent,
+      });
+      if (!response.ok) {
+        throw new Error(`doxxnet API error: HTTP ${response.status} ${response.statusText}`);
+      }
+      return await response.json();
+    } catch (err) {
+      if (isRetryableNetworkError(err) && attempt < retries) {
+        // Brief pause before retrying a transient network error
+        await new Promise<void>((r) => setTimeout(r, 3_000));
+        continue;
+      }
+      throw err;
+    }
+  }
+  /* istanbul ignore next */
+  throw new Error("doxxnet API: unreachable");
 }
 
 function assertApiSuccess(
