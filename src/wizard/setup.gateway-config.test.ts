@@ -36,6 +36,8 @@ vi.mock("../infra/doxxnet.js", () => ({
   findWgQuickBinary: (...args: unknown[]) => mocks.findWgQuickBinary(...args),
   verifyDoxxnetToken: (...args: unknown[]) => mocks.verifyDoxxnetToken(...args),
   listDoxxnetServers: (...args: unknown[]) => mocks.listDoxxnetServers(...args),
+  registerDoxxnetDomain: vi.fn(async () => undefined),
+  setupDoxxnetDomainCert: vi.fn(async () => undefined),
 }));
 
 import { configureGatewayForSetup } from "./setup.gateway-config.js";

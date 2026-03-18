@@ -527,6 +527,7 @@ export async function startGatewayServer(
           ? effectiveDoxxnetConfig.token
           : undefined,
       doxxnetServer: effectiveDoxxnetConfig?.server,
+      doxxnetDomain: effectiveDoxxnetConfig?.domain,
       resetOnExit: effectiveDoxxnetConfig?.resetOnExit,
       port,
       logDoxxnet,
@@ -1022,6 +1023,7 @@ export async function startGatewayServer(
       scope: doxxnetConfig.scope ?? "gateway",
       doxxnetToken: typeof doxxnetConfig.token === "string" ? doxxnetConfig.token : undefined,
       doxxnetServer: doxxnetConfig.server,
+      doxxnetDomain: doxxnetConfig.domain,
       resetOnExit: doxxnetConfig.resetOnExit,
       port,
       logDoxxnet,

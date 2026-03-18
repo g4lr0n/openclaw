@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import { resolveStateDir } from "../config/config.js";
 import type { DoxxnetTrafficScope } from "../config/types.gateway.js";
 import { runExec } from "../process/exec.js";
@@ -357,6 +359,152 @@ export async function wgQuickUp(
   const ip = parseWgIp(conf) ?? "";
   const interfaceName = path.basename(confPath, ".conf");
   return { interfaceName, interfaceIp: ip };
+}
+
+/** Expose the stored tunnel token for firewall rule creation. */
+export async function loadStoredDoxxnetTunnelToken(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | null> {
+  return loadTunnelToken(env);
+}
+
+/** Enable peer-to-peer mesh networking between all doxxnet tunnels on this account. */
+export async function enableDoxxnetMesh(token: string): Promise<void> {
+  const result = await doxxnetPost({ firewall_link_all_toggle: "1", token, enabled: "1" });
+  assertApiSuccess(result, "Failed to enable doxxnet mesh networking");
+}
+
+/** Add a firewall rule allowing inbound TCP on `port` to a tunnel's IP. */
+export async function addDoxxnetFirewallRule(params: {
+  token: string;
+  tunnelToken: string;
+  dstIp: string;
+  port: number;
+}): Promise<void> {
+  const result = await doxxnetPost({
+    firewall_rule_add: "1",
+    token: params.token,
+    tunnel_token: params.tunnelToken,
+    protocol: "TCP",
+    src_ip: "0.0.0.0/0",
+    src_port: "ALL",
+    dst_ip: params.dstIp,
+    dst_port: String(params.port),
+  });
+  assertApiSuccess(result, "Failed to add doxxnet firewall rule");
+}
+
+/** Register a doxxnet domain (e.g. "openclaw-xxxx.wg"). Idempotent — rethrows only on unexpected errors. */
+export async function registerDoxxnetDomain(token: string, domain: string): Promise<void> {
+  const result = await doxxnetPost({ create_domain: "1", token, domain });
+  assertApiSuccess(result, `Failed to register doxxnet domain ${domain}`);
+}
+
+/** Create/update an A record pointing a doxxnet domain to an IP address. */
+export async function createDoxxnetDnsRecord(
+  token: string,
+  domain: string,
+  ip: string,
+): Promise<void> {
+  const result = await doxxnetPost({
+    create_dns_record: "1",
+    token,
+    domain,
+    name: domain,
+    type: "A",
+    content: ip,
+    ttl: "300",
+  });
+  assertApiSuccess(result, `Failed to create DNS record for ${domain}`);
+}
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Sign a CSR with the doxxnet CA. Returns the signed PEM certificate.
+ * Handles both raw PEM responses and JSON `{ status, cert }` responses.
+ */
+async function doxxnetSignCertificate(token: string, domain: string, csr: string): Promise<string> {
+  const response = await fetch(DOXXNET_CONFIG_API, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ sign_certificate: "1", token, domain, csr }).toString(),
+  });
+  if (!response.ok) {
+    throw new Error(
+      `doxxnet sign_certificate error: HTTP ${response.status} ${response.statusText}`,
+    );
+  }
+  const text = await response.text();
+  // API may return raw PEM directly
+  if (text.trimStart().startsWith("-----BEGIN")) {
+    return text.trim();
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    throw new Error(`doxxnet sign_certificate returned unexpected body: ${text.slice(0, 200)}`);
+  }
+  const r = parsed as Record<string, unknown>;
+  if (r.status !== "success") {
+    const msg = typeof r.message === "string" ? r.message : JSON.stringify(r);
+    throw new Error(`doxxnet sign_certificate failed: ${msg}`);
+  }
+  const cert = r.cert ?? r.certificate ?? r.config;
+  if (typeof cert !== "string") {
+    throw new Error(`doxxnet sign_certificate response missing cert field: ${JSON.stringify(r)}`);
+  }
+  return cert.trim();
+}
+
+/**
+ * Generate an EC private key + CSR, sign it with the doxxnet CA, and write
+ * the cert + key to disk. The domain must already be registered.
+ */
+export async function setupDoxxnetDomainCert(params: {
+  token: string;
+  domain: string;
+  certPath: string;
+  keyPath: string;
+}): Promise<void> {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "doxxnet-cert-"));
+  try {
+    const tmpKey = path.join(tmpDir, "key.pem");
+    const tmpCsr = path.join(tmpDir, "csr.pem");
+    // Generate EC private key (prime256v1)
+    await execFileAsync("openssl", [
+      "ecparam",
+      "-name",
+      "prime256v1",
+      "-genkey",
+      "-noout",
+      "-out",
+      tmpKey,
+    ]);
+    // Generate CSR
+    await execFileAsync("openssl", [
+      "req",
+      "-new",
+      "-key",
+      tmpKey,
+      "-out",
+      tmpCsr,
+      "-subj",
+      `/CN=${params.domain}`,
+    ]);
+    const csr = await fs.readFile(tmpCsr, "utf8");
+    const cert = await doxxnetSignCertificate(params.token, params.domain, csr);
+    // Write key and cert
+    await fs.mkdir(path.dirname(params.keyPath), { recursive: true });
+    await fs.mkdir(path.dirname(params.certPath), { recursive: true });
+    const keyPem = await fs.readFile(tmpKey, "utf8");
+    await fs.writeFile(params.keyPath, keyPem, { mode: 0o600 });
+    await fs.chmod(params.keyPath, 0o600);
+    await fs.writeFile(params.certPath, cert, { mode: 0o644 });
+  } finally {
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
 }
 
 /** Bring down the WireGuard tunnel via `wg-quick down`. */

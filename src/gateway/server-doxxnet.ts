@@ -1,8 +1,12 @@
 import type { DoxxnetTrafficScope, GatewayDoxxnetMode } from "../config/types.gateway.js";
 import {
+  addDoxxnetFirewallRule,
   checkDoxxnetInterface,
+  createDoxxnetDnsRecord,
+  enableDoxxnetMesh,
   findWgQuickBinary,
   getOrCreateTunnelConfig,
+  loadStoredDoxxnetTunnelToken,
   pickPrimaryDoxxnetIPv4,
   wgQuickDown,
   wgQuickUp,
@@ -24,6 +28,7 @@ export async function startGatewayDoxxnetExposure(params: {
   scope: DoxxnetTrafficScope;
   doxxnetToken?: string;
   doxxnetServer?: string;
+  doxxnetDomain?: string;
   resetOnExit?: boolean;
   port: number;
   logDoxxnet: { info: (msg: string) => void; warn: (msg: string) => void };
@@ -81,6 +86,45 @@ export async function startGatewayDoxxnetExposure(params: {
     params.logDoxxnet.info(
       `doxxnet: tunnel already up${ip ? ` — interface IP ${ip}` : ""} (scope=${params.scope})`,
     );
+  }
+
+  // Resolve tunnel IP (used for firewall rules and DNS record).
+  const tunnelIp = pickPrimaryDoxxnetIPv4() || "";
+
+  // Enable mesh networking and add a firewall rule for the gateway port.
+  // Non-fatal: mesh failure shouldn't block gateway startup.
+  try {
+    await enableDoxxnetMesh(token);
+    if (tunnelIp) {
+      const tunnelToken = await loadStoredDoxxnetTunnelToken();
+      if (tunnelToken) {
+        await addDoxxnetFirewallRule({
+          token,
+          tunnelToken,
+          dstIp: tunnelIp,
+          port: params.port,
+        });
+        params.logDoxxnet.info(
+          `doxxnet: mesh networking enabled, firewall rule added for port ${params.port}`,
+        );
+      }
+    }
+  } catch (err) {
+    params.logDoxxnet.warn(
+      `doxxnet: mesh/firewall setup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  // Update DNS record so the registered domain resolves to the current tunnel IP.
+  if (params.doxxnetDomain && tunnelIp) {
+    try {
+      await createDoxxnetDnsRecord(token, params.doxxnetDomain, tunnelIp);
+      params.logDoxxnet.info(`doxxnet: DNS record updated — ${params.doxxnetDomain} → ${tunnelIp}`);
+    } catch (err) {
+      params.logDoxxnet.warn(
+        `doxxnet: DNS update failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   if (!params.resetOnExit) {

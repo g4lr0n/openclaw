@@ -17,6 +17,8 @@ export type GatewayDoxxnetConfig = {
   server?: string;
   /** Tear down the WireGuard tunnel on gateway shutdown. */
   resetOnExit?: boolean;
+  /** Registered doxxnet domain (e.g. "openclaw-xxxx.wg") used for HTTPS and DNS. */
+  domain?: string;
 };
 
 export type GatewayTlsConfig = {

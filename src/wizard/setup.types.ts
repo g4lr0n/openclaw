@@ -30,4 +30,5 @@ export type GatewayWizardSettings = {
   doxxnetMode: "off" | "on";
   doxxnetScope: DoxxnetTrafficScope;
   doxxnetResetOnExit: boolean;
+  doxxnetDomain?: string;
 };

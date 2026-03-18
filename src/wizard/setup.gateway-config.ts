@@ -1,3 +1,4 @@
+import path from "node:path";
 import {
   normalizeGatewayTokenInput,
   randomToken,
@@ -12,6 +13,7 @@ import type {
   OpenClawConfig,
 } from "../config/config.js";
 import { ensureControlUiAllowedOriginsForNonLoopbackBind } from "../config/gateway-control-ui-origins.js";
+import { resolveStateDir } from "../config/paths.js";
 import {
   normalizeSecretInputString,
   resolveSecretInputRef,
@@ -24,7 +26,13 @@ import {
   TAILSCALE_MISSING_BIN_NOTE_LINES,
 } from "../gateway/gateway-config-prompts.shared.js";
 import { DEFAULT_DANGEROUS_NODE_COMMANDS } from "../gateway/node-command-policy.js";
-import { findWgQuickBinary, listDoxxnetServers, verifyDoxxnetToken } from "../infra/doxxnet.js";
+import {
+  findWgQuickBinary,
+  listDoxxnetServers,
+  registerDoxxnetDomain,
+  setupDoxxnetDomainCert,
+  verifyDoxxnetToken,
+} from "../infra/doxxnet.js";
 import { findTailscaleBinary } from "../infra/tailscale.js";
 import {
   promptSecretRefForSetup,
@@ -155,6 +163,7 @@ export async function configureGatewayForSetup(
   let doxxnetResetOnExit = false;
   let doxxnetToken: string | undefined;
   let doxxnetServer: string | undefined;
+  let doxxnetDomain: string | undefined;
 
   if (flow !== "quickstart") {
     const doxxnetEnabled = Boolean(
@@ -263,6 +272,71 @@ export async function configureGatewayForSetup(
             initialValue: false,
           }),
         );
+
+        // HTTPS via doxxnet domain + CA-signed cert (scope=gateway only)
+        if (doxxnetScope === "gateway") {
+          const wantsHttps = Boolean(
+            await prompter.confirm({
+              message:
+                "Set up HTTPS via a doxxnet domain? (Enables secure Control UI — recommended)",
+              initialValue: true,
+            }),
+          );
+          if (wantsHttps) {
+            // Generate a random domain like openclaw-a1b2c3d4.wg
+            const suffix = Math.random().toString(16).slice(2, 10);
+            const proposedDomain = `openclaw-${suffix}.wg`;
+            await prompter.note(
+              [
+                `Registering doxxnet domain: ${proposedDomain}`,
+                "Generating EC private key and signing certificate with doxxnet CA...",
+                "(This may take a few seconds.)",
+              ].join("\n"),
+              "doxxnet HTTPS",
+            );
+            try {
+              await registerDoxxnetDomain(doxxnetToken, proposedDomain);
+              const stateDir = resolveStateDir(process.env);
+              const certPath = path.join(stateDir, "vpn", "tls", "doxxnet-cert.pem");
+              const keyPath = path.join(stateDir, "vpn", "tls", "doxxnet-key.pem");
+              await setupDoxxnetDomainCert({
+                token: doxxnetToken,
+                domain: proposedDomain,
+                certPath,
+                keyPath,
+              });
+              doxxnetDomain = proposedDomain;
+              nextConfig = {
+                ...nextConfig,
+                gateway: {
+                  ...nextConfig.gateway,
+                  tls: {
+                    enabled: true,
+                    certPath,
+                    keyPath,
+                  },
+                },
+              };
+              await prompter.note(
+                [
+                  `Domain registered: ${proposedDomain}`,
+                  "Certificate signed by doxxnet CA and saved.",
+                  "Gateway will serve HTTPS. Connect via:",
+                  `  https://${proposedDomain}:${port}`,
+                ].join("\n"),
+                "doxxnet HTTPS ready",
+              );
+            } catch (err) {
+              await prompter.note(
+                [
+                  `HTTPS setup failed: ${err instanceof Error ? err.message : String(err)}`,
+                  "Continuing without HTTPS. You can set up a doxxnet domain manually later.",
+                ].join("\n"),
+                "doxxnet HTTPS Warning",
+              );
+            }
+          }
+        }
       }
     }
   } else {
@@ -446,6 +520,7 @@ export async function configureGatewayForSetup(
               scope: doxxnetScope,
               ...(doxxnetToken ? { token: doxxnetToken } : {}),
               ...(doxxnetServer ? { server: doxxnetServer } : {}),
+              ...(doxxnetDomain ? { domain: doxxnetDomain } : {}),
               resetOnExit: doxxnetResetOnExit,
             },
           }
@@ -496,6 +571,7 @@ export async function configureGatewayForSetup(
       doxxnetMode,
       doxxnetScope,
       doxxnetResetOnExit,
+      doxxnetDomain,
     },
   };
 }

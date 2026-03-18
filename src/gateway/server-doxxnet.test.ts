@@ -11,6 +11,10 @@ vi.mock("../infra/doxxnet.js", () => ({
   checkDoxxnetInterface: vi.fn(),
   pickPrimaryDoxxnetIPv4: vi.fn(),
   setActiveDoxxnetCidr: vi.fn(),
+  enableDoxxnetMesh: vi.fn(),
+  addDoxxnetFirewallRule: vi.fn(),
+  loadStoredDoxxnetTunnelToken: vi.fn(),
+  createDoxxnetDnsRecord: vi.fn(),
 }));
 
 const mockLog = { info: vi.fn(), warn: vi.fn() };
@@ -173,5 +177,101 @@ describe("startGatewayDoxxnetExposure", () => {
     expect(cleanup).toBeTypeOf("function");
     await cleanup!();
     expect(doxxnet.wgQuickDown).toHaveBeenCalledWith("/tmp/doxxnet.conf", "/usr/bin/wg-quick");
+  });
+
+  it("enables mesh networking and adds firewall rule after tunnel is up (AC-mesh)", async () => {
+    vi.mocked(doxxnet.findWgQuickBinary).mockResolvedValue("/usr/bin/wg-quick");
+    vi.mocked(doxxnet.getOrCreateTunnelConfig).mockResolvedValue(
+      "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24",
+    );
+    vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
+    vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(false);
+    vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
+      interfaceName: "doxxnet",
+      interfaceIp: "10.8.0.1",
+    });
+    vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.8.0.1");
+    vi.mocked(doxxnet.loadStoredDoxxnetTunnelToken).mockResolvedValue("tunnel-tok");
+    vi.mocked(doxxnet.enableDoxxnetMesh).mockResolvedValue();
+    vi.mocked(doxxnet.addDoxxnetFirewallRule).mockResolvedValue();
+
+    await startGatewayDoxxnetExposure({
+      doxxnetMode: "on",
+      scope: "gateway",
+      doxxnetToken: "test-token",
+      port: 18789,
+      logDoxxnet: mockLog,
+    });
+
+    expect(doxxnet.enableDoxxnetMesh).toHaveBeenCalledWith("test-token");
+    expect(doxxnet.addDoxxnetFirewallRule).toHaveBeenCalledWith({
+      token: "test-token",
+      tunnelToken: "tunnel-tok",
+      dstIp: "10.8.0.1",
+      port: 18789,
+    });
+    expect(mockLog.info).toHaveBeenCalledWith(expect.stringContaining("mesh networking enabled"));
+  });
+
+  it("updates DNS record when doxxnetDomain is configured (AC-dns)", async () => {
+    vi.mocked(doxxnet.findWgQuickBinary).mockResolvedValue("/usr/bin/wg-quick");
+    vi.mocked(doxxnet.getOrCreateTunnelConfig).mockResolvedValue(
+      "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24",
+    );
+    vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
+    vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(false);
+    vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
+      interfaceName: "doxxnet",
+      interfaceIp: "10.8.0.1",
+    });
+    vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.8.0.1");
+    vi.mocked(doxxnet.loadStoredDoxxnetTunnelToken).mockResolvedValue(null);
+    vi.mocked(doxxnet.enableDoxxnetMesh).mockResolvedValue();
+    vi.mocked(doxxnet.createDoxxnetDnsRecord).mockResolvedValue();
+
+    await startGatewayDoxxnetExposure({
+      doxxnetMode: "on",
+      scope: "gateway",
+      doxxnetToken: "test-token",
+      doxxnetDomain: "openclaw-abc123.wg",
+      port: 18789,
+      logDoxxnet: mockLog,
+    });
+
+    expect(doxxnet.createDoxxnetDnsRecord).toHaveBeenCalledWith(
+      "test-token",
+      "openclaw-abc123.wg",
+      "10.8.0.1",
+    );
+    expect(mockLog.info).toHaveBeenCalledWith(expect.stringContaining("openclaw-abc123.wg"));
+  });
+
+  it("mesh/firewall failure is non-fatal (gateway still starts)", async () => {
+    vi.mocked(doxxnet.findWgQuickBinary).mockResolvedValue("/usr/bin/wg-quick");
+    vi.mocked(doxxnet.getOrCreateTunnelConfig).mockResolvedValue(
+      "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24",
+    );
+    vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
+    vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(false);
+    vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
+      interfaceName: "doxxnet",
+      interfaceIp: "10.8.0.1",
+    });
+    vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.8.0.1");
+    vi.mocked(doxxnet.enableDoxxnetMesh).mockRejectedValue(new Error("mesh API down"));
+
+    // Should not throw
+    const result = await startGatewayDoxxnetExposure({
+      doxxnetMode: "on",
+      scope: "gateway",
+      doxxnetToken: "test-token",
+      port: 18789,
+      logDoxxnet: mockLog,
+    });
+
+    expect(result).toBeNull();
+    expect(mockLog.warn).toHaveBeenCalledWith(
+      expect.stringContaining("mesh/firewall setup failed"),
+    );
   });
 });
