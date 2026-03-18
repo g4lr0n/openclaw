@@ -28,6 +28,7 @@ import {
 import { DEFAULT_DANGEROUS_NODE_COMMANDS } from "../gateway/node-command-policy.js";
 import {
   findWgQuickBinary,
+  getOrCreateTunnelConfig,
   listDoxxnetServers,
   registerDoxxnetDomain,
   setupDoxxnetDomainCert,
@@ -281,6 +282,31 @@ export async function configureGatewayForSetup(
             initialValue: false,
           }),
         );
+
+        // Pre-provision WireGuard tunnel so it's ready by the time gateway starts.
+        // The doxxnet API takes ~60s to provision; doing it here avoids a wait at
+        // gateway startup. Non-fatal: gateway will retry with backoff on startup.
+        if (doxxnetServer) {
+          await prompter.note(
+            [
+              "Creating WireGuard tunnel on doxxnet...",
+              "(This may take up to 90 seconds while provisioning.)",
+            ].join("\n"),
+            "doxxnet tunnel",
+          );
+          try {
+            await getOrCreateTunnelConfig(doxxnetToken, doxxnetServer);
+            await prompter.note("WireGuard tunnel ready.", "doxxnet tunnel");
+          } catch (err) {
+            await prompter.note(
+              [
+                `Tunnel pre-provisioning failed: ${err instanceof Error ? err.message : String(err)}`,
+                "The gateway will retry automatically on startup.",
+              ].join("\n"),
+              "doxxnet Warning",
+            );
+          }
+        }
 
         // HTTPS via doxxnet domain + CA-signed cert (scope=gateway only)
         if (doxxnetScope === "gateway") {

@@ -233,14 +233,13 @@ export function jsonConfigToWgConf(config: Record<string, unknown>): string | nu
   return lines.join("\n");
 }
 
-/**
- * Fetch WireGuard config via `wireguard=1&token=$TOKEN`.
- * The API returns the existing tunnel config for the account; returns null if no tunnel exists
- * or on any error.
- */
-async function fetchWireguardConfig(token: string): Promise<string | null> {
+/** Fetch WireGuard config using a tunnel token. Returns conf string or null. */
+async function fetchConfigWithTunnelToken(
+  token: string,
+  tunnelToken: string,
+): Promise<string | null> {
   try {
-    const result = await doxxnetPost({ wireguard: "1", token });
+    const result = await doxxnetPost({ wireguard: "1", token, tunnel_token: tunnelToken });
     const r = result as Record<string, unknown>;
     if (r.status !== "success") {
       return null;
@@ -260,50 +259,62 @@ async function fetchWireguardConfig(token: string): Promise<string | null> {
 
 /**
  * Get WireGuard config for an existing tunnel, or create one and return the config.
+ * Idempotent: persists the tunnel_token to disk and reuses it on subsequent calls.
  *
- * Flow (per SKILL.md):
- *  1. `wireguard=1&token` — returns config if a tunnel already exists.
- *  2. `create_tunnel=1&token&name=openclaw&server=<serverName>` — create a tunnel.
- *  3. `wireguard=1&token` again — retrieve config for the newly created tunnel.
+ * After `create_tunnel`, the doxxnet API needs up to ~60 seconds to provision the
+ * tunnel before `wireguard=1` returns the config. This function retries with backoff.
+ * Call `getOrCreateTunnelConfig` during `openclaw onboard` (not just gateway startup)
+ * so provisioning happens while the user completes setup, not on first gateway start.
  *
- * The `tunnel_token` returned by `create_tunnel` is persisted to disk for use in
- * firewall rule calls; it is NOT used when fetching the WireGuard config.
+ * @param postProvisionDelaysMs Override retry delays (milliseconds). Defaults to
+ *   production backoff schedule. Pass `[0]` in tests to skip real wait.
  */
 export async function getOrCreateTunnelConfig(
   token: string,
   serverName: string,
   env: NodeJS.ProcessEnv = process.env,
+  postProvisionDelaysMs: number[] = [10_000, 15_000, 20_000, 25_000, 25_000],
 ): Promise<string> {
-  // Step 1: try to get existing tunnel config
-  const existing = await fetchWireguardConfig(token);
-  if (existing) {
-    return existing;
+  // Try existing tunnel token from disk
+  const storedToken = await loadTunnelToken(env);
+  if (storedToken) {
+    const conf = await fetchConfigWithTunnelToken(token, storedToken);
+    if (conf) {
+      return conf;
+    }
+    // Stored token is stale — fall through to create a new tunnel
   }
 
-  // Step 2: no existing tunnel — create one
+  // Create a new tunnel (API requires type=wireguard and returns tunnel_token)
   const created = await doxxnetPost({
     create_tunnel: "1",
     token,
     name: "openclaw",
     server: serverName,
+    type: "wireguard",
   });
   assertApiSuccess(created, "Failed to create doxxnet tunnel");
-
-  // Persist tunnel_token for subsequent firewall rule calls
   const tunnelToken =
     typeof created.tunnel_token === "string"
       ? (created as { tunnel_token: string }).tunnel_token
       : null;
-  if (tunnelToken) {
-    await saveTunnelToken(tunnelToken, env);
+  if (!tunnelToken) {
+    throw new Error("doxxnet create_tunnel did not return a tunnel_token");
   }
+  await saveTunnelToken(tunnelToken, env);
 
-  // Step 3: retrieve config for the newly created tunnel
-  const conf = await fetchWireguardConfig(token);
-  if (!conf) {
-    throw new Error("Failed to retrieve WireGuard config after tunnel creation");
+  // Provisioning delay: the doxxnet API typically takes ~60s to make the tunnel
+  // config available after creation. Retry with backoff.
+  for (const delay of postProvisionDelaysMs) {
+    await new Promise<void>((r) => setTimeout(r, delay));
+    const conf = await fetchConfigWithTunnelToken(token, tunnelToken);
+    if (conf) {
+      return conf;
+    }
   }
-  return conf;
+  throw new Error(
+    "Failed to retrieve WireGuard config: tunnel provisioning timed out after ~95 seconds",
+  );
 }
 
 function patchAllowedIps(conf: string, scope: DoxxnetTrafficScope): string {

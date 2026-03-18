@@ -91,8 +91,13 @@ describe("getOrCreateTunnelConfig", () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
-  it("returns existing config via wireguard=1&token without calling create_tunnel", async () => {
-    // wireguard=1 returns existing config — no create_tunnel needed
+  it("returns existing config via stored tunnel_token without calling create_tunnel", async () => {
+    // Pre-write a stored tunnel token
+    const vpnDir = path.join(tmpDir, "vpn");
+    await fs.mkdir(vpnDir, { recursive: true });
+    await fs.writeFile(path.join(vpnDir, "doxxnet-tunnel-token.txt"), "stored-tunnel-tok");
+
+    // wireguard=1 with tunnel_token returns config
     mockApiResponse({ status: "success", config: WG_CONF });
 
     const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
@@ -102,48 +107,48 @@ describe("getOrCreateTunnelConfig", () => {
     const call = mockFetch.mock.calls[0];
     const body = new URLSearchParams(call[1].body as string);
     expect(body.get("wireguard")).toBe("1");
-    expect(body.get("token")).toBe("tok");
-    // No tunnel_token param — SKILL.md documents wireguard=1&token only
-    expect(body.has("tunnel_token")).toBe(false);
+    expect(body.get("tunnel_token")).toBe("stored-tunnel-tok");
     expect(body.has("create_tunnel")).toBe(false);
   });
 
-  it("calls create_tunnel then wireguard when no existing tunnel", async () => {
-    // wireguard=1 returns no config (no existing tunnel)
-    mockApiResponse({ status: "error", message: "no tunnel found" });
+  it("calls create_tunnel (with type=wireguard) then wireguard when no stored token", async () => {
     // create_tunnel=1 returns success + tunnel_token
     mockApiResponse({ status: "success", tunnel_token: "new-tunnel-tok" });
-    // wireguard=1 returns config for new tunnel
+    // wireguard=1 returns config on first retry
     mockApiResponse({ status: "success", config: WG_CONF });
 
     const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
-    const conf = await getOrCreateTunnelConfig("tok", "wireguard.mia.us.doxx.net", env);
+    // Pass [0] delay to skip real provisioning wait in tests
+    const conf = await getOrCreateTunnelConfig("tok", "wireguard.mia.us.doxx.net", env, [0]);
     expect(conf).toBe(WG_CONF);
-    expect(mockFetch).toHaveBeenCalledTimes(3);
-    const createCall = mockFetch.mock.calls[1];
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const createCall = mockFetch.mock.calls[0];
     const body = new URLSearchParams(createCall[1].body as string);
     expect(body.get("create_tunnel")).toBe("1");
-    expect(body.has("type")).toBe(false); // type param not listed in API spec
+    expect(body.get("type")).toBe("wireguard"); // required by actual API
     expect(body.get("server")).toBe("wireguard.mia.us.doxx.net");
-    // tunnel_token should be persisted to disk for firewall rule calls
+    // tunnel_token should be persisted to disk
     const saved = await fs.readFile(path.join(tmpDir, "vpn", "doxxnet-tunnel-token.txt"), "utf8");
     expect(saved.trim()).toBe("new-tunnel-tok");
   });
 
-  it("returns config even when stored tunnel_token exists on disk (token not used for config fetch)", async () => {
-    // Stored tunnel_token on disk — should not affect config retrieval
+  it("falls through to create_tunnel when stored token returns no config", async () => {
     const vpnDir = path.join(tmpDir, "vpn");
     await fs.mkdir(vpnDir, { recursive: true });
-    await fs.writeFile(path.join(vpnDir, "doxxnet-tunnel-token.txt"), "stored-tok");
+    await fs.writeFile(path.join(vpnDir, "doxxnet-tunnel-token.txt"), "stale-token");
 
-    // wireguard=1 returns config directly
+    // wireguard=1 with stale token returns error
+    mockApiResponse({ status: "error", message: "invalid tunnel_token" });
+    // create_tunnel=1 returns new tunnel_token
+    mockApiResponse({ status: "success", tunnel_token: "fresh-token" });
+    // wireguard=1 returns config on first retry
     mockApiResponse({ status: "success", config: WG_CONF });
 
     const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
-    const conf = await getOrCreateTunnelConfig("tok", "wireguard.mia.us.doxx.net", env);
+    // Pass [0] delay to skip real provisioning wait in tests
+    const conf = await getOrCreateTunnelConfig("tok", "wireguard.mia.us.doxx.net", env, [0]);
     expect(conf).toBe(WG_CONF);
-    // Only one call — no create_tunnel needed
-    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 });
 
