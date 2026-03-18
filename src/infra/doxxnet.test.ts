@@ -172,13 +172,15 @@ describe("writeDoxxnetWgConfig", () => {
     expect(content).toContain("AllowedIPs = 0.0.0.0/0, ::/0");
   });
 
-  it("preserves AllowedIPs for scope=gateway", async () => {
+  it("patches AllowedIPs to 10.0.0.0/8 for scope=gateway (mesh-only routing)", async () => {
+    // The doxxnet API returns AllowedIPs = 0.0.0.0/0 by default; scope=gateway restricts
+    // it to the mesh subnet so internet traffic doesn't go through the tunnel.
     const conf =
-      "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24\nEndpoint = host:51820";
+      "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = host:51820";
     const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
     const written = await writeDoxxnetWgConfig(conf, "gateway", env);
     const content = await fs.readFile(written, "utf8");
-    expect(content).toContain("AllowedIPs = 10.8.0.0/24");
+    expect(content).toContain("AllowedIPs = 10.0.0.0/8");
     expect(content).not.toContain("0.0.0.0/0");
   });
 

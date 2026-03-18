@@ -365,7 +365,13 @@ function patchAllowedIps(conf: string, scope: DoxxnetTrafficScope): string {
     // Route all traffic through doxxnet
     return conf.replace(/^\s*AllowedIPs\s*=\s*.+$/m, "AllowedIPs = 0.0.0.0/0, ::/0");
   }
-  // For "gateway" and "web": keep the default subnet-only routing from API
+  if (scope === "gateway") {
+    // Route only doxxnet mesh traffic (10.0.0.0/8 covers mesh IPs and DNS at 10.10.10.10).
+    // The doxxnet API returns AllowedIPs = 0.0.0.0/0 by default which routes all internet
+    // traffic through the tunnel — that blocks calls to config.doxx.net (the API endpoint
+    // is unreachable from inside the tunnel). Restrict to mesh-only routing instead.
+    return conf.replace(/^\s*AllowedIPs\s*=\s*.+$/m, "AllowedIPs = 10.0.0.0/8");
+  }
   return conf;
 }
 
