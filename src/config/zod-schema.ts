@@ -661,6 +661,7 @@ export const OpenClawSchema = z
             z.literal("loopback"),
             z.literal("custom"),
             z.literal("tailnet"),
+            z.literal("doxxnet"),
           ])
           .optional(),
         customBindHost: z.string().optional(),

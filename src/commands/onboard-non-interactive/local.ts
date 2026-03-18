@@ -192,7 +192,7 @@ export async function runNonInteractiveLocalSetup(params: {
   if (!opts.skipHealth) {
     const { healthCommand } = await import("../health.js");
     const links = resolveControlUiLinks({
-      bind: gatewayResult.bind as "auto" | "lan" | "loopback" | "custom" | "tailnet",
+      bind: gatewayResult.bind as "auto" | "lan" | "loopback" | "custom" | "tailnet" | "doxxnet",
       port: gatewayResult.port,
       customBindHost: nextConfig.gateway?.customBindHost,
       basePath: undefined,

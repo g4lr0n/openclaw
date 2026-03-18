@@ -423,7 +423,7 @@ const ENUM_EXPECTATIONS: Record<string, string[]> = {
   "messages.queue.drop": ['"old"', '"new"', '"summarize"'],
   "channels.defaults.groupPolicy": ['"open"', '"disabled"', '"allowlist"'],
   "gateway.mode": ['"local"', '"remote"'],
-  "gateway.bind": ['"auto"', '"lan"', '"loopback"', '"custom"', '"tailnet"'],
+  "gateway.bind": ['"auto"', '"lan"', '"loopback"', '"custom"', '"tailnet"', '"doxxnet"'],
   "gateway.auth.mode": ['"none"', '"token"', '"password"', '"trusted-proxy"'],
   "gateway.tailscale.mode": ['"off"', '"serve"', '"funnel"'],
   "browser.profiles.*.driver": ['"openclaw"', '"clawd"', '"existing-session"'],
