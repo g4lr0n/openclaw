@@ -172,16 +172,21 @@ describe("writeDoxxnetWgConfig", () => {
     expect(content).toContain("AllowedIPs = 0.0.0.0/0, ::/0");
   });
 
-  it("patches AllowedIPs to 10.0.0.0/8 for scope=gateway (mesh-only routing)", async () => {
-    // The doxxnet API returns AllowedIPs = 0.0.0.0/0 by default; scope=gateway restricts
-    // it to the mesh subnet so internet traffic doesn't go through the tunnel.
+  it("patches AllowedIPs to 10.0.0.0/8 and strips IPv6 for scope=gateway", async () => {
+    // The doxxnet API returns AllowedIPs = 0.0.0.0/0 and IPv6 Address/DNS by default.
+    // scope=gateway restricts to IPv4 mesh only so curl's IPv6 preference doesn't bypass
+    // the tunnel and hit the broken UTM NAT path.
     const conf =
-      "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = host:51820";
+      "[Interface]\nAddress = 10.8.0.1/24, 2602:f5c1:1::1/128\nDNS = 10.10.10.10,fd53::\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = host:51820";
     const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
     const written = await writeDoxxnetWgConfig(conf, "gateway", env);
     const content = await fs.readFile(written, "utf8");
     expect(content).toContain("AllowedIPs = 10.0.0.0/8");
-    expect(content).not.toContain("0.0.0.0/0");
+    expect(content).not.toContain("::/0");
+    expect(content).toContain("Address = 10.8.0.1/24");
+    expect(content).not.toContain("2602:f5c1");
+    expect(content).toContain("DNS = 10.10.10.10");
+    expect(content).not.toContain("fd53::");
   });
 
   it("sets file mode to 0o600", async () => {

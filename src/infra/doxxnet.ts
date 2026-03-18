@@ -366,11 +366,35 @@ function patchAllowedIps(conf: string, scope: DoxxnetTrafficScope): string {
     return conf.replace(/^\s*AllowedIPs\s*=\s*.+$/m, "AllowedIPs = 0.0.0.0/0, ::/0");
   }
   if (scope === "gateway") {
-    // Route only doxxnet mesh traffic (10.0.0.0/8 covers mesh IPs and DNS at 10.10.10.10).
-    // The doxxnet API returns AllowedIPs = 0.0.0.0/0 by default which routes all internet
-    // traffic through the tunnel — that blocks calls to config.doxx.net (the API endpoint
-    // is unreachable from inside the tunnel). Restrict to mesh-only routing instead.
-    return conf.replace(/^\s*AllowedIPs\s*=\s*.+$/m, "AllowedIPs = 10.0.0.0/8");
+    // Route only doxxnet IPv4 mesh traffic (10.0.0.0/8 covers mesh IPs and DNS at 10.10.10.10).
+    // The API returns AllowedIPs = 0.0.0.0/0 by default which routes all internet traffic
+    // through the tunnel — that blocks calls to config.doxx.net. Restrict to IPv4 mesh only.
+    //
+    // Also strip the IPv6 Address and DNS entries: without a matching IPv6 AllowedIPs,
+    // wg-quick assigns an IPv6 address to the interface and curl prefers it, routing IPv6
+    // traffic outside the tunnel via the default route where TLS may be blocked.
+    let patched = conf.replace(/^\s*AllowedIPs\s*=\s*.+$/m, "AllowedIPs = 10.0.0.0/8");
+    // Remove IPv6 addresses from Address line (keep only IPv4)
+    patched = patched.replace(
+      /^(\s*Address\s*=\s*)(.+)$/m,
+      (_match, prefix, addrs) =>
+        prefix +
+        addrs
+          .split(",")
+          .filter((a: string) => !a.trim().includes(":"))
+          .join(", "),
+    );
+    // Remove IPv6 entries from DNS line (keep only IPv4)
+    patched = patched.replace(
+      /^(\s*DNS\s*=\s*)(.+)$/m,
+      (_match, prefix, servers) =>
+        prefix +
+        servers
+          .split(",")
+          .filter((s: string) => !s.trim().includes(":"))
+          .join(", "),
+    );
+    return patched;
   }
   return conf;
 }
