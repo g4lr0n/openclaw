@@ -12,10 +12,13 @@ import { isIpInCidr } from "../shared/net/ip.js";
 
 const DOXXNET_CONFIG_API = "https://config.doxx.net/v1/";
 
-// Custom dispatcher: 60-second connect timeout + IPv4-only to handle hosts where
-// config.doxx.net DNS returns IPv6 addresses that are unreachable (common in VMs/NAT)
-// and to give slow routes enough time to complete (default undici timeout is 10s).
+// Dispatcher for critical API calls (WireGuard config fetch): 60s timeout + IPv4-only.
+// Handles hosts where config.doxx.net IPv6 is unreachable (VMs/NAT) and slow routes.
 const doxxnetAgent = new Agent({ connectTimeout: 60_000, connect: { family: 4 } });
+
+// Dispatcher for optional/non-critical API calls (mesh, firewall, DNS): 10s timeout.
+// These are best-effort; failing fast keeps gateway startup responsive.
+const doxxnetAgentFast = new Agent({ connectTimeout: 10_000, connect: { family: 4 } });
 
 export type DoxxnetServer = {
   /** server_name field from API — pass to create_tunnel */
@@ -132,7 +135,12 @@ function isRetryableNetworkError(err: unknown): boolean {
   );
 }
 
-async function doxxnetPost(params: Record<string, string>, retries = 2): Promise<unknown> {
+async function doxxnetPost(
+  params: Record<string, string>,
+  opts: { retries?: number; fast?: boolean } = {},
+): Promise<unknown> {
+  const { retries = 2, fast = false } = opts;
+  const agent = fast ? doxxnetAgentFast : doxxnetAgent;
   const body = new URLSearchParams(params).toString();
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -141,7 +149,7 @@ async function doxxnetPost(params: Record<string, string>, retries = 2): Promise
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
         // @ts-ignore — Node.js fetch accepts `dispatcher` to override undici Agent
-        dispatcher: doxxnetAgent,
+        dispatcher: agent,
       });
       if (!response.ok) {
         throw new Error(`doxxnet API error: HTTP ${response.status} ${response.statusText}`);
@@ -421,7 +429,11 @@ export async function loadStoredDoxxnetTunnelToken(
 
 /** Enable peer-to-peer mesh networking between all doxxnet tunnels on this account. */
 export async function enableDoxxnetMesh(token: string): Promise<void> {
-  const result = await doxxnetPost({ firewall_link_all_toggle: "1", token, enabled: "1" });
+  // Best-effort: use fast agent (10s timeout, no retries) — non-fatal at gateway startup.
+  const result = await doxxnetPost(
+    { firewall_link_all_toggle: "1", token, enabled: "1" },
+    { fast: true, retries: 0 },
+  );
   assertApiSuccess(result, "Failed to enable doxxnet mesh networking");
 }
 
@@ -432,16 +444,20 @@ export async function addDoxxnetFirewallRule(params: {
   dstIp: string;
   port: number;
 }): Promise<void> {
-  const result = await doxxnetPost({
-    firewall_rule_add: "1",
-    token: params.token,
-    tunnel_token: params.tunnelToken,
-    protocol: "TCP",
-    src_ip: "0.0.0.0/0",
-    src_port: "ALL",
-    dst_ip: params.dstIp,
-    dst_port: String(params.port),
-  });
+  // Best-effort: use fast agent (10s timeout, no retries) — non-fatal at gateway startup.
+  const result = await doxxnetPost(
+    {
+      firewall_rule_add: "1",
+      token: params.token,
+      tunnel_token: params.tunnelToken,
+      protocol: "TCP",
+      src_ip: "0.0.0.0/0",
+      src_port: "ALL",
+      dst_ip: params.dstIp,
+      dst_port: String(params.port),
+    },
+    { fast: true, retries: 0 },
+  );
   assertApiSuccess(result, "Failed to add doxxnet firewall rule");
 }
 
@@ -457,15 +473,19 @@ export async function createDoxxnetDnsRecord(
   domain: string,
   ip: string,
 ): Promise<void> {
-  const result = await doxxnetPost({
-    create_dns_record: "1",
-    token,
-    domain,
-    name: domain,
-    type: "A",
-    content: ip,
-    ttl: "300",
-  });
+  // Best-effort: use fast agent (10s timeout, no retries) — non-fatal at gateway startup.
+  const result = await doxxnetPost(
+    {
+      create_dns_record: "1",
+      token,
+      domain,
+      name: domain,
+      type: "A",
+      content: ip,
+      ttl: "300",
+    },
+    { fast: true, retries: 0 },
+  );
   assertApiSuccess(result, `Failed to create DNS record for ${domain}`);
 }
 
