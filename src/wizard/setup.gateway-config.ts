@@ -92,6 +92,11 @@ export async function configureGatewayForSetup(
           options: [
             { value: "loopback", label: "Loopback (127.0.0.1)" },
             { value: "lan", label: "LAN (0.0.0.0)" },
+            {
+              value: "doxxnet",
+              label: "doxxnet (WireGuard IP)",
+              hint: "Accessible via doxxnet VPN",
+            },
             { value: "tailnet", label: "Tailnet (Tailscale IP)" },
             { value: "auto", label: "Auto (Loopback → LAN)" },
             { value: "custom", label: "Custom IP" },
@@ -166,12 +171,15 @@ export async function configureGatewayForSetup(
   let doxxnetDomain: string | undefined;
 
   if (flow !== "quickstart") {
-    const doxxnetEnabled = Boolean(
-      await prompter.confirm({
-        message: "Route gateway traffic through doxxnet VPN? (optional)",
-        initialValue: false,
-      }),
-    );
+    // If user picked bind=doxxnet, skip the confirm and go straight to setup
+    const doxxnetEnabled =
+      bind === "doxxnet" ||
+      Boolean(
+        await prompter.confirm({
+          message: "Route gateway traffic through doxxnet VPN? (optional)",
+          initialValue: false,
+        }),
+      );
 
     if (doxxnetEnabled) {
       doxxnetMode = "on";
