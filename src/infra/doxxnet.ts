@@ -114,10 +114,14 @@ export async function findWgQuickBinary(): Promise<string | null> {
 
 async function doxxnetPost(params: Record<string, string>): Promise<unknown> {
   const body = new URLSearchParams(params).toString();
+  // 30-second timeout: the doxxnet API can take 12-15s to connect from some hosts
+  // when DNS returns multiple IPv4+IPv6 addresses and happy-eyeballs races them.
+  const signal = AbortSignal.timeout(30_000);
   const response = await fetch(DOXXNET_CONFIG_API, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body,
+    signal,
   });
   if (!response.ok) {
     throw new Error(`doxxnet API error: HTTP ${response.status} ${response.statusText}`);
