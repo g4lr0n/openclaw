@@ -26,6 +26,7 @@ import {
   TAILSCALE_MISSING_BIN_NOTE_LINES,
 } from "../gateway/gateway-config-prompts.shared.js";
 import { DEFAULT_DANGEROUS_NODE_COMMANDS } from "../gateway/node-command-policy.js";
+import { resolveBrewExecutable } from "../infra/brew.js";
 import {
   findWgQuickBinary,
   getOrCreateTunnelConfig,
@@ -39,6 +40,7 @@ import {
   promptSecretRefForSetup,
   resolveSecretInputModeForEnvSelection,
 } from "../plugins/provider-auth-input.js";
+import { runExec } from "../process/exec.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { validateIPv4AddressInput } from "../shared/net/ipv4.js";
 import type { WizardPrompter } from "./prompts.js";
@@ -163,6 +165,23 @@ export async function configureGatewayForSetup(
     );
   }
 
+  // Migration: warn if user has doxxnet bind selected and existing Tailscale config active
+  {
+    const hadTailscale =
+      quickstartGateway.tailscaleMode === "serve" || quickstartGateway.tailscaleMode === "funnel";
+    if (hadTailscale && bind === "doxxnet") {
+      await prompter.note(
+        [
+          "Your existing Tailscale serve/funnel configuration will be disabled.",
+          "",
+          "After completing setup, you may want to clean up Tailscale manually:",
+          "  tailscale serve reset",
+        ].join("\n"),
+        "Tailscale → doxxnet migration",
+      );
+    }
+  }
+
   // --- doxxnet VPN (optional, advanced flow only) ---
   let doxxnetMode: GatewayWizardSettings["doxxnetMode"] = "off";
   let doxxnetScope: GatewayWizardSettings["doxxnetScope"] = "gateway";
@@ -184,22 +203,6 @@ export async function configureGatewayForSetup(
 
     if (doxxnetEnabled) {
       doxxnetMode = "on";
-
-      // Check for wg-quick early so we can warn before prompting for creds
-      const wgQuickBin = await findWgQuickBinary();
-      if (!wgQuickBin) {
-        await prompter.note(
-          [
-            "wg-quick not found in PATH.",
-            "Install wireguard-tools to activate the tunnel:",
-            "  macOS:          brew install wireguard-tools",
-            "  Debian/Ubuntu:  apt install wireguard-tools",
-            "",
-            "You can continue setup, but the tunnel will fail at runtime.",
-          ].join("\n"),
-          "doxxnet Warning",
-        );
-      }
 
       // Token input
       let verified = false;
@@ -223,6 +226,62 @@ export async function configureGatewayForSetup(
             `Token verification failed: ${err instanceof Error ? err.message : String(err)}\nPlease try again.`,
             "doxxnet Error",
           );
+        }
+      }
+
+      // After token verified: check wg-quick and offer to install wireguard-tools
+      if (verified) {
+        const wgBin = await findWgQuickBinary();
+        if (!wgBin) {
+          const wantInstall = Boolean(
+            await prompter.confirm({
+              message: "wireguard-tools not found. Install it now?",
+              initialValue: true,
+            }),
+          );
+          if (wantInstall) {
+            const brew = resolveBrewExecutable();
+            const isLinux = process.platform === "linux";
+            try {
+              if (brew) {
+                await prompter.note("Running: brew install wireguard-tools...", "Installing");
+                await runExec(brew, ["install", "wireguard-tools"], { timeoutMs: 120_000 });
+              } else if (isLinux) {
+                await prompter.note(
+                  "Running: sudo apt-get install -y wireguard-tools...",
+                  "Installing",
+                );
+                await runExec("sudo", ["apt-get", "install", "-y", "wireguard-tools"], {
+                  timeoutMs: 120_000,
+                });
+              } else {
+                throw new Error("No supported package manager found");
+              }
+              await prompter.note("wireguard-tools installed successfully.", "Done");
+            } catch (err) {
+              await prompter.note(
+                [
+                  `Install failed: ${err instanceof Error ? err.message : String(err)}`,
+                  "",
+                  "Install manually before starting the gateway:",
+                  "  macOS:          brew install wireguard-tools",
+                  "  Debian/Ubuntu:  sudo apt-get install wireguard-tools",
+                  "  Other:          https://www.wireguard.com/install/",
+                ].join("\n"),
+                "Install Failed",
+              );
+            }
+          } else {
+            await prompter.note(
+              [
+                "You will need wireguard-tools installed before starting the gateway:",
+                "  macOS:          brew install wireguard-tools",
+                "  Debian/Ubuntu:  sudo apt-get install wireguard-tools",
+                "  Other:          https://www.wireguard.com/install/",
+              ].join("\n"),
+              "doxxnet Note",
+            );
+          }
         }
       }
 
@@ -259,22 +318,16 @@ export async function configureGatewayForSetup(
               label: "All outbound traffic",
               hint: "Route all openclaw API calls through doxxnet",
             },
-            {
-              value: "web" as const,
-              label: "Agent web requests",
-              hint: "Only agent browse/search via doxxnet",
-            },
           ],
           initialValue: "gateway" as const,
         });
 
-        // Constraints: scope=gateway binds to the WireGuard IP; others use loopback
+        // scope=gateway: gateway listens on the WireGuard IP so remote peers can connect
         if (doxxnetScope === "gateway") {
           bind = "doxxnet" as GatewayBindMode;
           customBindHost = undefined;
-        } else if (bind === "doxxnet") {
-          bind = "loopback";
         }
+        // scope=all: user chose their bind explicitly; respect it
 
         doxxnetResetOnExit = Boolean(
           await prompter.confirm({
