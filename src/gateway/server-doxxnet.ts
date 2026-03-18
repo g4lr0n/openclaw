@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import type { DoxxnetTrafficScope, GatewayDoxxnetMode } from "../config/types.gateway.js";
 import {
   addDoxxnetFirewallRule,
@@ -5,6 +6,7 @@ import {
   createDoxxnetDnsRecord,
   enableDoxxnetMesh,
   findWgQuickBinary,
+  getDoxxnetWgConfPath,
   getOrCreateTunnelConfig,
   loadStoredDoxxnetTunnelToken,
   pickPrimaryDoxxnetIPv4,
@@ -53,9 +55,23 @@ export async function startGatewayDoxxnetExposure(params: {
 
   let confPath: string;
   try {
-    const serverName = params.doxxnetServer ?? "";
-    const wgConf = await getOrCreateTunnelConfig(token, serverName);
-    confPath = await writeDoxxnetWgConfig(wgConf, params.scope);
+    // Use the cached WG config written during onboarding if it exists — this avoids
+    // an API round-trip on every gateway restart (especially important when connectivity
+    // to config.doxx.net is slow or the host routes through a VPN/NAT that filters TLS).
+    const cachedConfPath = getDoxxnetWgConfPath();
+    let usedCache = false;
+    try {
+      await fs.access(cachedConfPath);
+      confPath = cachedConfPath;
+      usedCache = true;
+    } catch {
+      // Cache miss — fall through to fetch from API
+    }
+    if (!usedCache) {
+      const serverName = params.doxxnetServer ?? "";
+      const wgConf = await getOrCreateTunnelConfig(token, serverName);
+      confPath = await writeDoxxnetWgConfig(wgConf, params.scope);
+    }
   } catch (err) {
     params.logDoxxnet.warn(
       `doxxnet: failed to get/write WireGuard config: ${err instanceof Error ? err.message : String(err)}`,
