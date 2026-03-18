@@ -118,8 +118,8 @@ export async function configureGatewayForSetup(
   }
 
   let authMode =
-    flow === "quickstart"
-      ? quickstartGateway.authMode
+    flow === "quickstart" || bind === "doxxnet"
+      ? ("token" as GatewayAuthChoice)
       : ((await prompter.select({
           message: "Gateway auth",
           options: [
