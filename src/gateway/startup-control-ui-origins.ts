@@ -9,7 +9,36 @@ export async function maybeSeedControlUiAllowedOriginsAtStartup(params: {
   writeConfig: (config: OpenClawConfig) => Promise<void>;
   log: { info: (msg: string) => void; warn: (msg: string) => void };
 }): Promise<OpenClawConfig> {
-  const seeded = ensureControlUiAllowedOriginsForNonLoopbackBind(params.config);
+  let seeded = ensureControlUiAllowedOriginsForNonLoopbackBind(params.config);
+
+  // For bind=doxxnet: also seed the HTTPS doxxnet domain origin if configured and
+  // not already present (migration for installs configured before this was added).
+  if (seeded.bind === "doxxnet") {
+    const domain = params.config.gateway?.doxxnet?.domain;
+    const port = params.config.gateway?.port ?? 18789;
+    if (domain) {
+      const httpsOrigin = `https://${domain}:${port}`;
+      const existing = seeded.config.gateway?.controlUi?.allowedOrigins ?? [];
+      if (!existing.includes(httpsOrigin)) {
+        const merged = [...new Set([...existing, httpsOrigin])];
+        seeded = {
+          ...seeded,
+          seededOrigins: merged,
+          config: {
+            ...seeded.config,
+            gateway: {
+              ...seeded.config.gateway,
+              controlUi: {
+                ...seeded.config.gateway?.controlUi,
+                allowedOrigins: merged,
+              },
+            },
+          },
+        };
+      }
+    }
+  }
+
   if (!seeded.seededOrigins || !seeded.bind) {
     return params.config;
   }

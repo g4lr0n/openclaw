@@ -341,6 +341,12 @@ export async function configureGatewayForSetup(
                 keyPath,
               });
               doxxnetDomain = proposedDomain;
+              // Add the HTTPS doxxnet domain as a Control UI allowed origin so the
+              // non-loopback bind=doxxnet gateway can serve the Control UI.
+              const doxxnetOrigin = `https://${proposedDomain}:${port}`;
+              const existingOrigins = Array.isArray(nextConfig.gateway?.controlUi?.allowedOrigins)
+                ? nextConfig.gateway.controlUi.allowedOrigins
+                : [];
               nextConfig = {
                 ...nextConfig,
                 gateway: {
@@ -349,6 +355,10 @@ export async function configureGatewayForSetup(
                     enabled: true,
                     certPath,
                     keyPath,
+                  },
+                  controlUi: {
+                    ...nextConfig.gateway?.controlUi,
+                    allowedOrigins: [...new Set([...existingOrigins, doxxnetOrigin])],
                   },
                 },
               };
