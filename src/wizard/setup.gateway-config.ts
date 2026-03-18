@@ -94,7 +94,7 @@ export async function configureGatewayForSetup(
             { value: "lan", label: "LAN (0.0.0.0)" },
             {
               value: "doxxnet",
-              label: "doxxnet (WireGuard IP)",
+              label: "doxxnet",
               hint: "Accessible via doxxnet VPN",
             },
             { value: "tailnet", label: "Tailnet (Tailscale IP)" },
