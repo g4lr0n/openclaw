@@ -424,6 +424,35 @@ export async function configureGatewayForSetup(
                 ].join("\n"),
                 "doxxnet HTTPS ready",
               );
+              await prompter.note(
+                [
+                  "Your browser/device must trust the doxxnet root CA to avoid certificate warnings.",
+                  "Run the command for each device/OS that will connect to this gateway:",
+                  "",
+                  "  Download URL: https://a0x13.doxx.net/assets/doxx-root-ca.crt",
+                  "",
+                  "  macOS:",
+                  "    curl -o /tmp/doxx-root-ca.crt https://a0x13.doxx.net/assets/doxx-root-ca.crt",
+                  "    sudo security add-trusted-cert -d -r trustRoot \\",
+                  "      -k /Library/Keychains/System.keychain /tmp/doxx-root-ca.crt",
+                  "",
+                  "  Windows (PowerShell, run as Administrator):",
+                  "    Invoke-WebRequest https://a0x13.doxx.net/assets/doxx-root-ca.crt -OutFile doxx-root-ca.crt",
+                  "    Import-Certificate -FilePath doxx-root-ca.crt -CertStoreLocation Cert:\\LocalMachine\\Root",
+                  "",
+                  "  Linux:",
+                  "    curl -o /tmp/doxx-root-ca.crt https://a0x13.doxx.net/assets/doxx-root-ca.crt",
+                  "    sudo cp /tmp/doxx-root-ca.crt /usr/local/share/ca-certificates/doxx-root-ca.crt",
+                  "    sudo update-ca-certificates",
+                  "",
+                  "  iOS: Open https://a0x13.doxx.net/assets/doxx-root-ca.crt in Safari → install profile",
+                  "    then Settings → General → VPN & Device Management → trust the certificate",
+                  "",
+                  "  Android: Download the cert, then Settings → Security → Install from storage",
+                  "    (path varies by manufacturer)",
+                ].join("\n"),
+                "doxxnet Root CA — action required on each browser/device",
+              );
             } catch (err) {
               await prompter.note(
                 [

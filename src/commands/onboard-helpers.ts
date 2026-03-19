@@ -11,6 +11,7 @@ import { resolveSessionTranscriptsDirForAgent } from "../config/sessions.js";
 import { callGateway } from "../gateway/call.js";
 import { normalizeControlUiBasePath } from "../gateway/control-ui-shared.js";
 import { pickPrimaryLanIPv4, isValidIPv4 } from "../gateway/net.js";
+import { pickPrimaryDoxxnetIPv4 } from "../infra/doxxnet.js";
 import { isSafeExecutableValue } from "../infra/exec-safety.js";
 import { pickPrimaryTailnetIPv4 } from "../infra/tailnet.js";
 import { isWSL } from "../infra/wsl.js";
@@ -476,7 +477,9 @@ export function resolveControlUiLinks(params: {
     if (bind === "lan") {
       return pickPrimaryLanIPv4() ?? "127.0.0.1";
     }
-    // doxxnet: show loopback in UI links; the WireGuard IP is for external access
+    if (bind === "doxxnet") {
+      return pickPrimaryDoxxnetIPv4() ?? "127.0.0.1";
+    }
     return "127.0.0.1";
   })();
   const basePath = normalizeControlUiBasePath(params.basePath);

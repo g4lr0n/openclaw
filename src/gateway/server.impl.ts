@@ -30,6 +30,7 @@ import {
   resolveControlUiRootSync,
 } from "../infra/control-ui-assets.js";
 import { isDiagnosticsEnabled } from "../infra/diagnostic-events.js";
+import { pickPrimaryDoxxnetIPv4 } from "../infra/doxxnet.js";
 import { logAcceptedEnvOption } from "../infra/env.js";
 import { createExecApprovalForwarder } from "../infra/exec-approval-forwarder.js";
 import { onHeartbeatEvent } from "../infra/heartbeat-events.js";
@@ -532,6 +533,25 @@ export async function startGatewayServer(
       port,
       logDoxxnet,
     });
+    // After doxxnet tunnel is up, also allow the raw WireGuard IP origin so users
+    // can reach the gateway directly via IP (not just the .wg domain).
+    const doxxnetIp = pickPrimaryDoxxnetIPv4();
+    if (doxxnetIp) {
+      const ipOrigin = `http://${doxxnetIp}:${port}`;
+      const existing = cfgAtStart.gateway?.controlUi?.allowedOrigins ?? [];
+      if (!existing.includes(ipOrigin)) {
+        cfgAtStart = {
+          ...cfgAtStart,
+          gateway: {
+            ...cfgAtStart.gateway,
+            controlUi: {
+              ...cfgAtStart.gateway?.controlUi,
+              allowedOrigins: [...existing, ipOrigin],
+            },
+          },
+        };
+      }
+    }
   }
 
   initSubagentRegistry();
