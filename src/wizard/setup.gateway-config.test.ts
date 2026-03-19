@@ -33,9 +33,9 @@ vi.mock("../infra/tailscale.js", () => ({
 }));
 
 vi.mock("../infra/doxxnet.js", () => ({
-  findWgQuickBinary: (...args: unknown[]) => mocks.findWgQuickBinary(...args),
-  verifyDoxxnetToken: (...args: unknown[]) => mocks.verifyDoxxnetToken(...args),
-  listDoxxnetServers: (...args: unknown[]) => mocks.listDoxxnetServers(...args),
+  findWgQuickBinary: mocks.findWgQuickBinary,
+  verifyDoxxnetToken: mocks.verifyDoxxnetToken,
+  listDoxxnetServers: mocks.listDoxxnetServers,
   registerDoxxnetDomain: vi.fn(async () => undefined),
   setupDoxxnetDomainCert: vi.fn(async () => undefined),
 }));
