@@ -360,40 +360,68 @@ export async function getOrCreateTunnelConfig(
   );
 }
 
+/** Expand an IPv6 address to 8 colon-separated zero-padded hex groups. */
+function expandIPv6(addr: string): string[] | null {
+  const halves = addr.split("::");
+  if (halves.length > 2) {
+    return null;
+  }
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves[1] ? halves[1].split(":") : [];
+  const missing = 8 - left.length - right.length;
+  const groups = [...left, ...Array(missing).fill("0"), ...right];
+  if (groups.length !== 8) {
+    return null;
+  }
+  return groups.map((g) => g.padStart(4, "0"));
+}
+
+/** Given a WireGuard config string, derive the doxxnet /48 mesh prefix from the
+ *  tunnel's IPv6 address (e.g. "2602:f5c1:1::1e:899" → "2602:f5c1:0001::/48").
+ *  Returns null if no IPv6 address is found in the Address line. */
+function deriveIpv6MeshPrefix(conf: string): string | null {
+  const match = conf.match(/^\s*Address\s*=\s*([^\n\r]+)/m);
+  if (!match) {
+    return null;
+  }
+  const ipv6 = match[1]
+    .split(",")
+    .map((s) => s.trim())
+    .find((s) => s.includes(":"));
+  if (!ipv6) {
+    return null;
+  }
+  const addr = ipv6.split("/")[0];
+  try {
+    const groups = expandIPv6(addr);
+    if (!groups) {
+      return null;
+    }
+    return `${groups[0]}:${groups[1]}:${groups[2]}::/48`;
+  } catch {
+    return null;
+  }
+}
+
 function patchAllowedIps(conf: string, scope: DoxxnetTrafficScope): string {
   if (scope === "all") {
     // Route all traffic through doxxnet
     return conf.replace(/^\s*AllowedIPs\s*=\s*.+$/m, "AllowedIPs = 0.0.0.0/0, ::/0");
   }
   if (scope === "gateway") {
-    // Route only doxxnet IPv4 mesh traffic (10.0.0.0/8 covers mesh IPs and DNS at 10.10.10.10).
-    // The API returns AllowedIPs = 0.0.0.0/0 by default which routes all internet traffic
-    // through the tunnel — that blocks calls to config.doxx.net. Restrict to IPv4 mesh only.
-    //
-    // Also strip the IPv6 Address and DNS entries: without a matching IPv6 AllowedIPs,
-    // wg-quick assigns an IPv6 address to the interface and curl prefers it, routing IPv6
-    // traffic outside the tunnel via the default route where TLS may be blocked.
-    let patched = conf.replace(/^\s*AllowedIPs\s*=\s*.+$/m, "AllowedIPs = 10.0.0.0/8");
-    // Remove IPv6 addresses from Address line (keep only IPv4)
-    patched = patched.replace(
-      /^(\s*Address\s*=\s*)(.+)$/m,
-      (_match, prefix, addrs) =>
-        prefix +
-        addrs
-          .split(",")
-          .filter((a: string) => !a.trim().includes(":"))
-          .join(", "),
-    );
-    // Remove IPv6 entries from DNS line (keep only IPv4)
-    patched = patched.replace(
-      /^(\s*DNS\s*=\s*)(.+)$/m,
-      (_match, prefix, servers) =>
-        prefix +
-        servers
-          .split(",")
-          .filter((s: string) => !s.trim().includes(":"))
-          .join(", "),
-    );
+    // Route only doxxnet mesh traffic. The API returns AllowedIPs = 0.0.0.0/0 by default
+    // which routes all internet traffic through the tunnel — that blocks calls to
+    // config.doxx.net. Restrict to the IPv4 mesh (10.0.0.0/8) plus the doxxnet IPv6 /48
+    // prefix derived from the tunnel address. Including the IPv6 prefix ensures curl's
+    // IPv6 preference sends traffic through the tunnel rather than falling back to a
+    // broken path on the default route.
+    const ipv6Prefix = deriveIpv6MeshPrefix(conf);
+    const allowedIPs = ipv6Prefix ? `10.0.0.0/8, ${ipv6Prefix}` : "10.0.0.0/8";
+    let patched = conf.replace(/^\s*AllowedIPs\s*=\s*.+$/m, `AllowedIPs = ${allowedIPs}`);
+    // Strip DNS line to prevent system-wide DNS override. Doxxnet's DNS (10.10.10.10,
+    // fd53::) only resolves .wg domains; setting it system-wide breaks all general
+    // internet queries on the host and any VMs that forward DNS through the host.
+    patched = patched.replace(/^\s*DNS\s*=\s*.+$\n?/m, "");
     return patched;
   }
   return conf;
@@ -427,7 +455,8 @@ export async function writeDoxxnetWgConfig(
 export async function wgQuickUp(
   confPath: string,
   bin: string,
-): Promise<{ interfaceName: string; interfaceIp: string }> {
+): Promise<{ interfaceName: string; interfaceIp: string; alreadyUp: boolean }> {
+  let alreadyUp = false;
   try {
     await runExec(bin, ["up", confPath], { timeoutMs: 30_000 });
   } catch (err) {
@@ -439,6 +468,7 @@ export async function wgQuickUp(
     if (!msg.includes("already exists")) {
       throw err;
     }
+    alreadyUp = true;
   }
   const conf = await fs.readFile(confPath, "utf8");
   const cidr = parseWgAddressCidr(conf);
@@ -447,7 +477,7 @@ export async function wgQuickUp(
   }
   const ip = parseWgIp(conf) ?? "";
   const interfaceName = path.basename(confPath, ".conf");
-  return { interfaceName, interfaceIp: ip };
+  return { interfaceName, interfaceIp: ip, alreadyUp };
 }
 
 /** Expose the stored tunnel token for firewall rule creation. */

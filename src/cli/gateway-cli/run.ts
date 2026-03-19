@@ -101,7 +101,7 @@ const GATEWAY_AUTH_MODES: readonly GatewayAuthMode[] = [
 ];
 const GATEWAY_TAILSCALE_MODES: readonly GatewayTailscaleMode[] = ["off", "serve", "funnel"];
 const GATEWAY_DOXXNET_MODES: readonly GatewayDoxxnetMode[] = ["off", "on"];
-const GATEWAY_DOXXNET_SCOPES: readonly DoxxnetTrafficScope[] = ["all", "gateway", "web"];
+const GATEWAY_DOXXNET_SCOPES: readonly DoxxnetTrafficScope[] = ["all", "gateway"];
 
 function warnInlinePasswordFlag() {
   defaultRuntime.error(

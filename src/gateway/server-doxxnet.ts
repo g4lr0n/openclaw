@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import type { DoxxnetTrafficScope, GatewayDoxxnetMode } from "../config/types.gateway.js";
 import {
   addDoxxnetFirewallRule,
-  checkDoxxnetInterface,
   createDoxxnetDnsRecord,
   enableDoxxnetMesh,
   findWgQuickBinary,
@@ -53,7 +52,7 @@ export async function startGatewayDoxxnetExposure(params: {
     return null;
   }
 
-  let confPath: string;
+  let confPath!: string;
   try {
     // Use the cached WG config written during onboarding if it exists — this avoids
     // an API round-trip on every gateway restart (especially important when connectivity
@@ -79,29 +78,25 @@ export async function startGatewayDoxxnetExposure(params: {
     return null;
   }
 
-  // Check if tunnel is already up (idempotent)
-  const ifName = "doxxnet";
-  const alreadyUp = await checkDoxxnetInterface(ifName);
-  if (!alreadyUp) {
-    try {
-      const { interfaceIp } = await wgQuickUp(confPath, bin);
-      const ip = interfaceIp || pickPrimaryDoxxnetIPv4() || "";
-      if (ip) {
-        params.logDoxxnet.info(`doxxnet: tunnel up — interface IP ${ip} (scope=${params.scope})`);
-      } else {
-        params.logDoxxnet.info(`doxxnet: tunnel up (scope=${params.scope})`);
-      }
-    } catch (err) {
-      params.logDoxxnet.warn(
-        `doxxnet: wg-quick up failed: ${err instanceof Error ? err.message : String(err)}`,
+  // Always call wgQuickUp — it handles "already exists" idempotently and always reads
+  // the conf + sets the active CIDR, so pickPrimaryDoxxnetIPv4 works on restarts too.
+  try {
+    const { interfaceIp, alreadyUp } = await wgQuickUp(confPath, bin);
+    const ip = interfaceIp || pickPrimaryDoxxnetIPv4() || "";
+    if (alreadyUp) {
+      params.logDoxxnet.info(
+        `doxxnet: tunnel already up${ip ? ` — interface IP ${ip}` : ""} (scope=${params.scope})`,
       );
-      return null;
+    } else if (ip) {
+      params.logDoxxnet.info(`doxxnet: tunnel up — interface IP ${ip} (scope=${params.scope})`);
+    } else {
+      params.logDoxxnet.info(`doxxnet: tunnel up (scope=${params.scope})`);
     }
-  } else {
-    const ip = pickPrimaryDoxxnetIPv4();
-    params.logDoxxnet.info(
-      `doxxnet: tunnel already up${ip ? ` — interface IP ${ip}` : ""} (scope=${params.scope})`,
+  } catch (err) {
+    params.logDoxxnet.warn(
+      `doxxnet: wg-quick up failed: ${err instanceof Error ? err.message : String(err)}`,
     );
+    return null;
   }
 
   // Resolve tunnel IP (used for firewall rules and DNS record).

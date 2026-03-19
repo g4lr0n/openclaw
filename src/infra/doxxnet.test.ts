@@ -172,21 +172,50 @@ describe("writeDoxxnetWgConfig", () => {
     expect(content).toContain("AllowedIPs = 0.0.0.0/0, ::/0");
   });
 
-  it("patches AllowedIPs to 10.0.0.0/8 and strips IPv6 for scope=gateway", async () => {
+  it("patches AllowedIPs to 10.0.0.0/8 + IPv6 /48 prefix for scope=gateway", async () => {
     // The doxxnet API returns AllowedIPs = 0.0.0.0/0 and IPv6 Address/DNS by default.
-    // scope=gateway restricts to IPv4 mesh only so curl's IPv6 preference doesn't bypass
-    // the tunnel and hit the broken UTM NAT path.
+    // scope=gateway restricts to the IPv4 mesh plus the doxxnet /48 prefix derived from
+    // the tunnel IPv6 address, so curl's IPv6 preference routes through the tunnel.
+    // Address IPv6 entry is preserved; DNS line is stripped (see next test).
     const conf =
       "[Interface]\nAddress = 10.8.0.1/24, 2602:f5c1:1::1/128\nDNS = 10.10.10.10,fd53::\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = host:51820";
     const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
     const written = await writeDoxxnetWgConfig(conf, "gateway", env);
     const content = await fs.readFile(written, "utf8");
-    expect(content).toContain("AllowedIPs = 10.0.0.0/8");
+    expect(content).toContain("AllowedIPs = 10.0.0.0/8, 2602:f5c1:0001::/48");
     expect(content).not.toContain("::/0");
-    expect(content).toContain("Address = 10.8.0.1/24");
-    expect(content).not.toContain("2602:f5c1");
+    // Address IPv6 entry preserved
+    expect(content).toContain("2602:f5c1");
+  });
+
+  it("strips DNS line for scope=gateway to prevent system-wide DNS override", async () => {
+    // Doxxnet's DNS (10.10.10.10, fd53::) only resolves .wg domains; leaving it
+    // system-wide breaks general internet queries on the host and connected VMs.
+    const conf =
+      "[Interface]\nAddress = 10.8.0.1/24, 2602:f5c1:1::1/128\nDNS = 10.10.10.10, fd53::\n[Peer]\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = host:51820";
+    const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
+    const written = await writeDoxxnetWgConfig(conf, "gateway", env);
+    const content = await fs.readFile(written, "utf8");
+    expect(content).not.toMatch(/^\s*DNS\s*=/m);
+  });
+
+  it("keeps DNS line for scope=all (user routes all traffic through doxxnet)", async () => {
+    const conf =
+      "[Interface]\nAddress = 10.8.0.1/24\nDNS = 10.10.10.10\n[Peer]\nAllowedIPs = 10.8.0.0/24\nEndpoint = host:51820";
+    const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
+    const written = await writeDoxxnetWgConfig(conf, "all", env);
+    const content = await fs.readFile(written, "utf8");
     expect(content).toContain("DNS = 10.10.10.10");
-    expect(content).not.toContain("fd53::");
+  });
+
+  it("falls back to 10.0.0.0/8 only when no IPv6 address in config for scope=gateway", async () => {
+    const conf =
+      "[Interface]\nAddress = 10.8.0.1/24\nDNS = 10.10.10.10\n[Peer]\nAllowedIPs = 0.0.0.0/0\nEndpoint = host:51820";
+    const env = { OPENCLAW_STATE_DIR: tmpDir } as unknown as NodeJS.ProcessEnv;
+    const written = await writeDoxxnetWgConfig(conf, "gateway", env);
+    const content = await fs.readFile(written, "utf8");
+    expect(content).toContain("AllowedIPs = 10.0.0.0/8");
+    expect(content).not.toContain("::/48");
   });
 
   it("sets file mode to 0o600", async () => {
@@ -236,12 +265,13 @@ describe("wgQuickUp", () => {
       new Error("Command failed: wg-quick up /tmp/doxxnet.conf\nalready exists as `utun0'"),
     );
     const { wgQuickUp: wgUp } = await import("./doxxnet.js");
-    // Should not throw; reads the conf from disk to extract CIDR
+    // Should not throw; reads the conf from disk to extract CIDR; alreadyUp=true
     const tmpConf = path.join(os.tmpdir(), "doxxnet-idempotent.conf");
     await fs.writeFile(tmpConf, "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nPublicKey = abc");
     try {
       const result = await wgUp(tmpConf, "/opt/homebrew/bin/wg-quick");
       expect(result.interfaceIp).toBe("10.8.0.1");
+      expect(result.alreadyUp).toBe(true);
     } finally {
       await fs.rm(tmpConf, { force: true });
     }

@@ -4,7 +4,7 @@ export type GatewayBindMode = "auto" | "lan" | "loopback" | "custom" | "tailnet"
 
 export type GatewayDoxxnetMode = "off" | "on";
 
-export type DoxxnetTrafficScope = "all" | "gateway" | "web";
+export type DoxxnetTrafficScope = "all" | "gateway";
 
 export type GatewayDoxxnetConfig = {
   /** doxxnet VPN mode for the Gateway. */

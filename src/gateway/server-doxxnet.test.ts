@@ -4,11 +4,11 @@ import { startGatewayDoxxnetExposure } from "./server-doxxnet.js";
 
 vi.mock("../infra/doxxnet.js", () => ({
   findWgQuickBinary: vi.fn(),
+  getDoxxnetWgConfPath: vi.fn().mockReturnValue("/tmp/__no_such_doxxnet_test.conf"),
   getOrCreateTunnelConfig: vi.fn(),
   writeDoxxnetWgConfig: vi.fn(),
   wgQuickUp: vi.fn(),
   wgQuickDown: vi.fn(),
-  checkDoxxnetInterface: vi.fn(),
   pickPrimaryDoxxnetIPv4: vi.fn(),
   setActiveDoxxnetCidr: vi.fn(),
   enableDoxxnetMesh: vi.fn(),
@@ -71,10 +71,10 @@ describe("startGatewayDoxxnetExposure", () => {
       "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24",
     );
     vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
-    vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(false);
     vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
       interfaceName: "doxxnet",
       interfaceIp: "10.8.0.1",
+      alreadyUp: false,
     });
     vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.8.0.1");
 
@@ -93,13 +93,18 @@ describe("startGatewayDoxxnetExposure", () => {
     expect(result).toBeNull();
   });
 
-  it("skips wgQuickUp when tunnel is already up (idempotent AC-4)", async () => {
+  it("logs 'already up' when wgQuickUp returns alreadyUp=true (AC-4)", async () => {
     vi.mocked(doxxnet.findWgQuickBinary).mockResolvedValue("/usr/bin/wg-quick");
     vi.mocked(doxxnet.getOrCreateTunnelConfig).mockResolvedValue(
       "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24",
     );
     vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
-    vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(true); // already up
+    // wgQuickUp is always called; it returns alreadyUp=true when tunnel was already up
+    vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
+      interfaceName: "doxxnet",
+      interfaceIp: "10.8.0.1",
+      alreadyUp: true,
+    });
     vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.8.0.1");
 
     await startGatewayDoxxnetExposure({
@@ -110,8 +115,43 @@ describe("startGatewayDoxxnetExposure", () => {
       logDoxxnet: mockLog,
     });
 
-    expect(doxxnet.wgQuickUp).not.toHaveBeenCalled();
+    // wgQuickUp is always called (no pre-check)
+    expect(doxxnet.wgQuickUp).toHaveBeenCalled();
     expect(mockLog.info).toHaveBeenCalledWith(expect.stringContaining("already up"));
+  });
+
+  it("populates tunnel IP on restart when wgQuickUp returns alreadyUp=true (AC-restart)", async () => {
+    // Regression: before this fix, on gateway restart with tunnel already up,
+    // checkDoxxnetInterface returned true → wgQuickUp was skipped → CIDR never set →
+    // pickPrimaryDoxxnetIPv4 returned undefined → firewall/DNS updates were skipped.
+    vi.mocked(doxxnet.findWgQuickBinary).mockResolvedValue("/usr/bin/wg-quick");
+    vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
+    // Simulate cached conf path existing (no API call needed)
+    vi.mocked(doxxnet.getOrCreateTunnelConfig).mockResolvedValue(
+      "[Interface]\nAddress = 10.9.0.5/24\n[Peer]\nAllowedIPs = 10.9.0.0/24",
+    );
+    vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
+      interfaceName: "doxxnet",
+      interfaceIp: "10.9.0.5",
+      alreadyUp: true,
+    });
+    vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.9.0.5");
+    vi.mocked(doxxnet.loadStoredDoxxnetTunnelToken).mockResolvedValue("tunnel-tok");
+    vi.mocked(doxxnet.enableDoxxnetMesh).mockResolvedValue();
+    vi.mocked(doxxnet.addDoxxnetFirewallRule).mockResolvedValue();
+
+    await startGatewayDoxxnetExposure({
+      doxxnetMode: "on",
+      scope: "gateway",
+      doxxnetToken: "test-token",
+      port: 18789,
+      logDoxxnet: mockLog,
+    });
+
+    // wgQuickUp was called and set CIDR; firewall rule update should have run
+    expect(doxxnet.addDoxxnetFirewallRule).toHaveBeenCalledWith(
+      expect.objectContaining({ dstIp: "10.9.0.5" }),
+    );
   });
 
   it("reads token from DOXXNET_TOKEN env when doxxnetToken param is absent (AC-11)", async () => {
@@ -123,10 +163,10 @@ describe("startGatewayDoxxnetExposure", () => {
         "[Interface]\nAddress = 10.9.0.1/24\n[Peer]\nAllowedIPs = 10.9.0.0/24",
       );
       vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
-      vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(false);
       vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
         interfaceName: "doxxnet",
         interfaceIp: "10.9.0.1",
+        alreadyUp: false,
       });
       vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.9.0.1");
 
@@ -156,10 +196,10 @@ describe("startGatewayDoxxnetExposure", () => {
       "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24",
     );
     vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
-    vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(false);
     vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
       interfaceName: "doxxnet",
       interfaceIp: "10.8.0.1",
+      alreadyUp: false,
     });
     vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.8.0.1");
     vi.mocked(doxxnet.wgQuickDown).mockResolvedValue();
@@ -185,10 +225,10 @@ describe("startGatewayDoxxnetExposure", () => {
       "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24",
     );
     vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
-    vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(false);
     vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
       interfaceName: "doxxnet",
       interfaceIp: "10.8.0.1",
+      alreadyUp: false,
     });
     vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.8.0.1");
     vi.mocked(doxxnet.loadStoredDoxxnetTunnelToken).mockResolvedValue("tunnel-tok");
@@ -219,10 +259,10 @@ describe("startGatewayDoxxnetExposure", () => {
       "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24",
     );
     vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
-    vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(false);
     vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
       interfaceName: "doxxnet",
       interfaceIp: "10.8.0.1",
+      alreadyUp: false,
     });
     vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.8.0.1");
     vi.mocked(doxxnet.loadStoredDoxxnetTunnelToken).mockResolvedValue(null);
@@ -252,10 +292,10 @@ describe("startGatewayDoxxnetExposure", () => {
       "[Interface]\nAddress = 10.8.0.1/24\n[Peer]\nAllowedIPs = 10.8.0.0/24",
     );
     vi.mocked(doxxnet.writeDoxxnetWgConfig).mockResolvedValue("/tmp/doxxnet.conf");
-    vi.mocked(doxxnet.checkDoxxnetInterface).mockResolvedValue(false);
     vi.mocked(doxxnet.wgQuickUp).mockResolvedValue({
       interfaceName: "doxxnet",
       interfaceIp: "10.8.0.1",
+      alreadyUp: false,
     });
     vi.mocked(doxxnet.pickPrimaryDoxxnetIPv4).mockReturnValue("10.8.0.1");
     vi.mocked(doxxnet.enableDoxxnetMesh).mockRejectedValue(new Error("mesh API down"));
